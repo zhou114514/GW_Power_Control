@@ -2,6 +2,11 @@
 
 一个基于 PyQt5 开发的光学头电源控制管理系统，支持多路电源的集中控制、数据采集、实时监测和自动化测试。
 
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![PyQt5](https://img.shields.io/badge/PyQt5-5.15+-green.svg)
+![License](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)
+
+
 ## 📋 功能特性
 
 ### 核心功能
