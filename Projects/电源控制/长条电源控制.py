@@ -46,6 +46,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
     volatge_signal = pyqtSignal(dict)
     current_signal = pyqtSignal(dict)
     dataUpSignal = pyqtSignal(str)
+    tcp_deflect =pyqtSignal([str, bool])
 
     def __init__(self, name):
         super(LongPower,self).__init__()
@@ -109,21 +110,18 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
         Tool.port_check(self.portchoose)
 
-        self.to36VTimer = QtCore.QTimer()
-        self.to36VTimer.timeout.connect(self.to36)
+        # 统一的拉偏测试Timer和模式控制
+        self.deflectionTimer = QtCore.QTimer()
+        self.deflectionTimer.timeout.connect(self._deflection_step)
+        self.deflection_mode = None  # "Higher", "Lower", "Normal"
+        self.deflection_notice = True  # 是否弹窗提示
 
-        self.to45VTimer = QtCore.QTimer()
-        self.to45VTimer.timeout.connect(self.to45)
-
-        self.back42VTimer = QtCore.QTimer()
-        self.back42VTimer.timeout.connect(self.back42)
-
-        self.Btn_to36.clicked.connect(lambda: self.to36VTimer.start(1000))
-        self.Btn_to36.clicked.connect(lambda: self.btn_Control(Btn_to45=False, Btn_back42=False))
-        self.Btn_to45.clicked.connect(lambda: self.to45VTimer.start(1000))
-        self.Btn_to45.clicked.connect(lambda: self.btn_Control(Btn_to36=False, Btn_back42=False))
-        self.Btn_back42.clicked.connect(lambda: self.back42VTimer.start(1000))
-        self.Btn_back42.clicked.connect(lambda: self.btn_Control(Btn_to36=False, Btn_to45=False))
+        # 按钮连接到统一的拉偏测试接口
+        self.Btn_to36.clicked.connect(lambda: self.start_deflection("Lower", notice=True))
+        self.Btn_to45.clicked.connect(lambda: self.start_deflection("Higher", notice=True))
+        self.Btn_back42.clicked.connect(lambda: self.start_deflection("Normal", notice=True))
+        
+        self.tcp_deflect.connect(self.start_deflection)
 
     def btn_Control(self, start_btn=None, stop_btn=None, start_listen=None, stop_listen=None, Btn_to36=None, Btn_to45=None, Btn_back42=None):
         if start_btn is not None:
@@ -141,35 +139,89 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         if Btn_back42 is not None:
             self.Btn_back42.setEnabled(Btn_back42)
 
-    def to36(self):
+    def start_deflection(self, direction: str, notice: bool = True):
+        """
+        统一的拉偏测试启动函数
+        :param direction: 拉偏方向 - "Higher"(向上到45V), "Lower"(向下到36V), "Normal"(回到42V)
+        :param notice: 是否在完成时弹窗提示
+        :return: [成功标志, 消息]
+        """
+        if not self.isConnected:
+            return [False, "Port not connected"]
+        
+        if direction not in ["Higher", "Lower", "Normal"]:
+            return [False, f"Invalid direction: {direction}"]
+        
+        # 设置模式和通知标志
+        self.deflection_mode = direction
+        self.deflection_notice = notice
+        
+        # 禁用其他按钮，根据当前模式启用相应按钮
+        if direction == "Higher":
+            self.btn_Control(Btn_to36=False, Btn_to45=True, Btn_back42=False)
+            self.sigInfo.emit("开始向上拉偏到45V")
+        elif direction == "Lower":
+            self.btn_Control(Btn_to36=True, Btn_to45=False, Btn_back42=False)
+            self.sigInfo.emit("开始向下拉偏到36V")
+        elif direction == "Normal":
+            self.btn_Control(Btn_to36=False, Btn_to45=False, Btn_back42=True)
+            self.sigInfo.emit("开始回到默认42V")
+        
+        # 启动Timer
+        self.deflectionTimer.start(1000)
+        return [True, ""]
+    
+    def stop_deflection(self):
+        """停止拉偏测试"""
+        self.deflectionTimer.stop()
+        self.deflection_mode = None
+        self.btn_Control(Btn_to36=True, Btn_to45=True, Btn_back42=True)
+    
+    def _deflection_step(self):
+        """拉偏测试的单步执行（Timer回调函数）"""
+        if self.deflection_mode == "Lower":
+            self._deflect_to_36()
+        elif self.deflection_mode == "Higher":
+            self._deflect_to_45()
+        elif self.deflection_mode == "Normal":
+            self._deflect_to_42()
+    
+    def _deflect_to_36(self):
+        """向下拉偏到36V"""
         if math.isclose(self.CurrentV, 36, abs_tol=0.1) or self.CurrentV < 35.9:
             self.sigInfo.emit("已达到36V")
-            self.to36VTimer.stop()
+            self.deflectionTimer.stop()
             self.btn_Control(Btn_to45=True, Btn_back42=True)
-            QMessageBox.information(self, "提示", "已达到36V")
+            if self.deflection_notice:
+                QMessageBox.information(self, "提示", "已达到36V")
             return
         self.V_set(round(self.CurrentV, 1) - 0.1)
-
-    def to45(self):
+    
+    def _deflect_to_45(self):
+        """向上拉偏到45V"""
         if math.isclose(self.CurrentV, 45, abs_tol=0.1) or self.CurrentV > 45.1:
             self.sigInfo.emit("已达到45V")
-            self.to45VTimer.stop()
+            self.deflectionTimer.stop()
             self.btn_Control(Btn_to36=True, Btn_back42=True)
-            QMessageBox.information(self, "提示", "已达到45V")
+            if self.deflection_notice:
+                QMessageBox.information(self, "提示", "已达到45V")
             return
         self.V_set(round(self.CurrentV, 1) + 0.1)
-
-    def back42(self):
+    
+    def _deflect_to_42(self):
+        """回到默认42V"""
         if math.isclose(self.CurrentV, 42, abs_tol=0.1) \
             or (self.CurrentV >= 41 and self.CurrentV <= 42 and (self.CurrentV + 0.1) > 42) \
             or (self.CurrentV <= 43 and self.CurrentV >= 42 and (self.CurrentV - 0.1) < 42):
             self.V_set(42)
             self.sigInfo.emit("已回到42V")
-            self.back42VTimer.stop()
+            self.deflectionTimer.stop()
             self.btn_Control(Btn_to36=True, Btn_to45=True)
-            QMessageBox.information(self, "提示", "已回到42V")
+            if self.deflection_notice:
+                QMessageBox.information(self, "提示", "已回到42V")
             return
         self.V_set((round(self.CurrentV, 1) - 0.1) if self.CurrentV > 42 else (round(self.CurrentV, 1) + 0.1))
+
 
     def findThread(self, name):
         # print("开始监看")
@@ -307,7 +359,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.psw.enableOutput()
             self.sigInfo.emit(f"已打开电源输出")
             self.isOutput = True
-            self.btn_Control(start_btn=False, stop_btn=True, start_listen=True, stop_listen=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
+            self.btn_Control(start_btn=False, stop_btn=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
             return [True, ""]
         else:
             self.sigInfo.emit(f"请先连接电源")
@@ -325,7 +377,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         if self.plot_thread.is_alive():
             self.StopFlag = True
             self.plot_thread.join()
-        self.btn_Control(start_btn=True, stop_btn=True, Btn_to36=False, Btn_to45=False, Btn_back42=False)
+        self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, Btn_to36=False, Btn_to45=False, Btn_back42=False)
 
     
     def output_close_tcp(self):
@@ -340,7 +392,18 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         if self.plot_thread.is_alive():
             self.StopFlag = True
             self.plot_thread.join()
+        self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, Btn_to36=False, Btn_to45=False, Btn_back42=False)
         return [True, ""]
+
+
+    def downDeflection_tcp(self, Con, notice: bool = False):
+        """
+        TCP远程控制拉偏测试接口
+        :param Con: 拉偏方向 - "Higher"(向上到45V), "Lower"(向下到36V), "Normal"(回到42V)
+        :param notice: 是否在完成时弹窗提示，远程控制默认不弹窗
+        :return: [成功标志, 消息]
+        """
+        return self.start_deflection(Con, notice=notice)
 
 
     def plot_callback(self):

@@ -139,17 +139,8 @@ class TCPServer(QThread):
             return self.make_backpack(False, None, "Missing parameter: Con")
         
         deflection_type = params["Con"]
-        button_map = {
-            "Higher": self.LongPower[0].Btn_to45,
-            "Lower": self.LongPower[0].Btn_to36,
-            "Normal": self.LongPower[0].Btn_back42
-        }
         
-        button = button_map.get(deflection_type)
-        if button is None:
-            return self.make_backpack(False, None, f"Invalid deflection type: {deflection_type}")
-        
-        button.click()
+        self.LongPower[0].tcp_deflect.emit(deflection_type, False)
         return self.make_backpack(True, None, None)
     
     def _handle_connect_device(self, params):
