@@ -27,7 +27,7 @@ class TCPServer(QThread):
         # 本机IP地址
         self.host = host
         self.port = int(port)
-        self.LongPower = LongPower.get_instances()
+        self.LongPower: dict[str, LongPower] = LongPower.get_instances()
 
     def handle_client_connection(self, client_socket):
         """处理客户端连接"""
@@ -114,45 +114,112 @@ class TCPServer(QThread):
         pass
 
 
-    def cmd_handler(self, cmd_dict):
-        """命令处理"""
-        if cmd_dict['opcode'] == 'PowerON':
-            if len(self.LongPower) == 0:
-                return self.make_backpack(False, "No power control board available")
-            else:
-                result = self.LongPower[0].output_open_tcp()
-                return self.make_backpack(result[0], "Null", result[1])
-        elif cmd_dict['opcode'] == 'PowerOFF':
-            if len(self.LongPower) == 0:
-                return self.make_backpack(False, "No power control board available")
-            else:
-                result = self.LongPower[0].output_close_tcp()
-                return self.make_backpack(result[0], "Null", result[1])
-        elif cmd_dict['opcode'] == 'CurrentValue':
-            if len(self.LongPower) == 0:
-                return self.make_backpack(False, "No power control board available")
-            else:
-                V, I = self.LongPower[0].get_value()
-                return self.make_backpack(True, {"Voltage": V, "Current": I}, "Null")
-        elif cmd_dict['opcode'] == 'ConnectDevice':
-            if len(self.LongPower) == 0:
-                return self.make_backpack(False, "No power control board available")
-            else:
-                result = self.LongPower[0].port_open()
-                return self.make_backpack(result[0], "Null", result[1])
-        elif cmd_dict['opcode'] == 'check':
-            return self.make_backpack(True, VERSION, "Null")
-        else:
-            return self.make_backpack(False, "Null", "Invalid command")
+    def _check_device_available(self):
+        """检查设备是否可用"""
+        return len(self.LongPower) > 0
+    
+    def _handle_power_on(self, params):
+        """处理开机命令"""
+        result = self.LongPower[0].output_open_tcp()
+        return self.make_backpack(result[0], None, result[1])
+    
+    def _handle_power_off(self, params):
+        """处理关机命令"""
+        result = self.LongPower[0].output_close_tcp()
+        return self.make_backpack(result[0], None, result[1])
+    
+    def _handle_current_value(self, params):
+        """处理获取电流电压命令"""
+        voltage, current = self.LongPower[0].get_value()
+        return self.make_backpack(True, {"Voltage": voltage, "Current": current}, None)
+    
+    def _handle_down_deflection(self, params):
+        """处理下偏转命令"""
+        if not params or "Con" not in params:
+            return self.make_backpack(False, None, "Missing parameter: Con")
+        
+        deflection_type = params["Con"]
+        button_map = {
+            "Higher": self.LongPower[0].Btn_to45,
+            "Lower": self.LongPower[0].Btn_to36,
+            "Normal": self.LongPower[0].Btn_back42
+        }
+        
+        button = button_map.get(deflection_type)
+        if button is None:
+            return self.make_backpack(False, None, f"Invalid deflection type: {deflection_type}")
+        
+        button.click()
+        return self.make_backpack(True, None, None)
+    
+    def _handle_connect_device(self, params):
+        """处理连接设备命令"""
+        result = self.LongPower[0].port_open()
+        return self.make_backpack(result[0], None, result[1])
+    
+    def _handle_check(self, params):
+        """处理版本检查命令"""
+        return self.make_backpack(True, VERSION, None)
 
-    def make_backpack(self, isSuccess:bool, value:dict|str, msg:str):
-        """返回包"""
+    def cmd_handler(self, cmd_dict):
+        """命令处理中心"""
+        try:
+            opcode = cmd_dict.get('opcode')
+            if not opcode:
+                return self.make_backpack(False, None, "Missing opcode")
+            
+            # 命令映射表 - 不需要设备的命令
+            no_device_commands = {
+                'check': self._handle_check
+            }
+            
+            # 命令映射表 - 需要设备的命令
+            device_commands = {
+                'PowerON': self._handle_power_on,
+                'PowerOFF': self._handle_power_off,
+                'CurrentValue': self._handle_current_value,
+                'DownDeflection': self._handle_down_deflection,
+                'ConnectDevice': self._handle_connect_device
+            }
+            
+            # 处理不需要设备的命令
+            if opcode in no_device_commands:
+                return no_device_commands[opcode](None)
+            
+            # 处理需要设备的命令
+            if opcode in device_commands:
+                # 检查设备是否可用
+                if not self._check_device_available():
+                    return self.make_backpack(False, None, "No power control board available")
+                
+                params = cmd_dict.get('parameter', {})
+                return device_commands[opcode](params)
+            
+            # 未知命令
+            return self.make_backpack(False, None, f"Unknown command: {opcode}")
+            
+        except KeyError as e:
+            return self.make_backpack(False, None, f"Missing required field: {str(e)}")
+        except Exception as e:
+            return self.make_backpack(False, None, f"Command execution error: {str(e)}")
+
+    def make_backpack(self, isSuccess: bool, value: dict | str | None = None, msg: str | None = None):
+        """构造返回数据包
+        
+        Args:
+            isSuccess: 命令是否执行成功
+            value: 返回值，可以是字典、字符串或None
+            msg: 错误消息，None时会转换为"Null"
+        
+        Returns:
+            JSON格式的响应字符串
+        """
         backpack = {
             "IsSuccessful": isSuccess,
-            "Value": value,
-            "ErrorMessage": msg
+            "Value": value if value is not None else "Null",
+            "ErrorMessage": msg if msg is not None else "Null"
         }
-        return json.dumps(backpack)
+        return json.dumps(backpack, ensure_ascii=False)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
