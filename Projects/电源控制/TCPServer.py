@@ -120,12 +120,12 @@ class TCPServer(QThread):
     
     def _handle_power_on(self, params):
         """处理开机命令"""
-        result = self.LongPower[0].output_open_tcp()
+        result = self.LongPower[0].invoke_tcp_power_on()
         return self.make_backpack(result[0], None, result[1])
     
     def _handle_power_off(self, params):
         """处理关机命令"""
-        result = self.LongPower[0].output_close_tcp()
+        result = self.LongPower[0].invoke_tcp_power_off()
         return self.make_backpack(result[0], None, result[1])
     
     def _handle_current_value(self, params):
@@ -138,6 +138,9 @@ class TCPServer(QThread):
         if not params or "Con" not in params:
             return self.make_backpack(False, None, "Missing parameter: Con")
         
+        if not self.LongPower[0].isConnected:
+            return self.make_backpack(False, None, "Serial port not connected")
+        
         deflection_type = params["Con"]
         
         self.LongPower[0].tcp_deflect.emit(deflection_type, False)
@@ -145,7 +148,7 @@ class TCPServer(QThread):
     
     def _handle_connect_device(self, params):
         """处理连接设备命令"""
-        result = self.LongPower[0].port_open()
+        result = self.LongPower[0].invoke_tcp_connect()
         return self.make_backpack(result[0], None, result[1])
     
     def _handle_check(self, params):

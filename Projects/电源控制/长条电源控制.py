@@ -32,6 +32,8 @@ from .tool import Tool
 TOTAL_SEC=20 #图上显示的时间时间长度
 TIME_GAP=25 #采样间隔TIME_GAP个点取一个数字
 POINT_NUM=int(100/25*TOTAL_SEC) #图上显示的点数
+MAX_DEFLECTION_FAILURES=3 #拉偏操作最大连续失败次数
+MAX_PLOT_FAILURES=3 #采集数据最大连续失败次数
 
 class LongPower(QtWidgets.QWidget,Ui_Form):
     instances = []
@@ -47,6 +49,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
     current_signal = pyqtSignal(dict)
     dataUpSignal = pyqtSignal(str)
     tcp_deflect =pyqtSignal([str, bool])
+    _tcp_invoke_signal = pyqtSignal()
 
     def __init__(self, name):
         super(LongPower,self).__init__()
@@ -115,6 +118,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.deflectionTimer.timeout.connect(self._deflection_step)
         self.deflection_mode = None  # "Higher", "Lower", "Normal"
         self.deflection_notice = True  # 是否弹窗提示
+        self._deflection_fail_count = 0
 
         # 按钮连接到统一的拉偏测试接口
         self.Btn_to36.clicked.connect(lambda: self.start_deflection("Lower", notice=True))
@@ -122,6 +126,41 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.Btn_back42.clicked.connect(lambda: self.start_deflection("Normal", notice=True))
         
         self.tcp_deflect.connect(self.start_deflection)
+
+        # TCP线程安全调用机制：确保串口操作在Qt主线程中执行
+        self._tcp_invoke_lock = threading.Lock()
+        self._tcp_op_event = threading.Event()
+        self._tcp_op_func = None
+        self._tcp_op_result = None
+        self._tcp_invoke_signal.connect(self._on_tcp_invoke)
+
+    def _on_tcp_invoke(self):
+        """槽函数：在Qt主线程中执行TCP请求的操作"""
+        if self._tcp_op_func:
+            try:
+                self._tcp_op_result = self._tcp_op_func()
+            except Exception as e:
+                self._tcp_op_result = [False, str(e)]
+            self._tcp_op_event.set()
+
+    def _invoke_in_main_thread(self, func, timeout=30):
+        """从TCP子线程安全调用需要在主线程执行的函数，阻塞等待结果"""
+        with self._tcp_invoke_lock:
+            self._tcp_op_event.clear()
+            self._tcp_op_func = func
+            self._tcp_invoke_signal.emit()
+            if self._tcp_op_event.wait(timeout=timeout):
+                return self._tcp_op_result
+            return [False, "Operation timed out"]
+
+    def invoke_tcp_power_on(self):
+        return self._invoke_in_main_thread(self.output_open_tcp)
+
+    def invoke_tcp_power_off(self):
+        return self._invoke_in_main_thread(self.output_close_tcp)
+
+    def invoke_tcp_connect(self):
+        return self._invoke_in_main_thread(self.port_open)
 
     def btn_Control(self, start_btn=None, stop_btn=None, start_listen=None, stop_listen=None, Btn_to36=None, Btn_to45=None, Btn_back42=None):
         if start_btn is not None:
@@ -152,7 +191,8 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         if direction not in ["Higher", "Lower", "Normal"]:
             return [False, f"Invalid direction: {direction}"]
         
-        # 设置模式和通知标志
+        # 重置失败计数，设置模式和通知标志
+        self._deflection_fail_count = 0
         self.deflection_mode = direction
         self.deflection_notice = notice
         
@@ -175,16 +215,25 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         """停止拉偏测试"""
         self.deflectionTimer.stop()
         self.deflection_mode = None
+        self._deflection_fail_count = 0
         self.btn_Control(Btn_to36=True, Btn_to45=True, Btn_back42=True)
     
     def _deflection_step(self):
         """拉偏测试的单步执行（Timer回调函数）"""
-        if self.deflection_mode == "Lower":
-            self._deflect_to_36()
-        elif self.deflection_mode == "Higher":
-            self._deflect_to_45()
-        elif self.deflection_mode == "Normal":
-            self._deflect_to_42()
+        try:
+            if self.deflection_mode == "Lower":
+                self._deflect_to_36()
+            elif self.deflection_mode == "Higher":
+                self._deflect_to_45()
+            elif self.deflection_mode == "Normal":
+                self._deflect_to_42()
+            self._deflection_fail_count = 0
+        except Exception as e:
+            self._deflection_fail_count += 1
+            self.sigInfo.emit(f"拉偏操作异常({self._deflection_fail_count}/{MAX_DEFLECTION_FAILURES}): {e}")
+            if self._deflection_fail_count >= MAX_DEFLECTION_FAILURES:
+                self.sigInfo.emit("串口连续异常，已自动停止拉偏")
+                self.stop_deflection()
     
     def _deflect_to_36(self):
         """向下拉偏到36V"""
@@ -409,28 +458,36 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
     def plot_callback(self):
         CH1_V = {"电压": 0}
         CH1_I = {"电流": 0}
+        fail_count = 0
         while not self.StopFlag:
-            V, I = self.psw.getOutput()
-            CH1_V["电压"] = V
-            CH1_I["电流"] = I
-            self.CurrentV = V
-            self.CurrentI = I
-            if I > self.safty:
-                self.StopFlag = True
-                self.current_warn.emit(f"{self.name}", f"CH1", f"{I}")
-            # self.volatge_layout.updateData(CH1_V)
-            # self.current_layout.updateData(CH1_I)
-            self.volatge_signal.emit(CH1_V)
-            self.current_signal.emit(CH1_I)
-            # 创建一个CSV文件，保存采集的数据
-            if not os.path.exists(f"./电源采集数据/"):
-                os.mkdir(f"./电源采集数据/")
-            if not os.path.exists(f"./电源采集数据/{self.name}_{self.start_time}.csv"):
-                with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "w", encoding='gbk') as f:
-                    f.write("时间,CH1电压,CH1电流\n")
-            with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "a", encoding='gbk') as f:
-                f.write(f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},{CH1_V['电压']},{CH1_I['电流']}\n")
-            time.sleep(0.1)
+            try:
+                V, I = self.psw.getOutput()
+                fail_count = 0
+                CH1_V["电压"] = V
+                CH1_I["电流"] = I
+                self.CurrentV = V
+                self.CurrentI = I
+                if I > self.safty:
+                    self.StopFlag = True
+                    self.current_warn.emit(f"{self.name}", f"CH1", f"{I}")
+                self.volatge_signal.emit(CH1_V)
+                self.current_signal.emit(CH1_I)
+                if not os.path.exists(f"./电源采集数据/"):
+                    os.mkdir(f"./电源采集数据/")
+                if not os.path.exists(f"./电源采集数据/{self.name}_{self.start_time}.csv"):
+                    with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "w", encoding='gbk') as f:
+                        f.write("时间,CH1电压,CH1电流\n")
+                with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "a", encoding='gbk') as f:
+                    f.write(f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},{CH1_V['电压']},{CH1_I['电流']}\n")
+                time.sleep(0.1)
+            except Exception as e:
+                fail_count += 1
+                self.sigInfo.emit(f"采集数据异常({fail_count}/{MAX_PLOT_FAILURES}): {e}")
+                if fail_count >= MAX_PLOT_FAILURES:
+                    self.sigInfo.emit("串口连续异常，已自动停止采集")
+                    self.StopFlag = True
+                    break
+                time.sleep(1)
 
     def get_value(self):
         return [self.CurrentV, self.CurrentI]

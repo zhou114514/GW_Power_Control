@@ -31,7 +31,7 @@ class psw_xx_xx(object):
         self.serial = None
         self.voltage = 0
         self.current = 0
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def open(self, port, readTimeOut = 1, writeTimeOut = 1):
         self.serial = MySerial(port         = port,
@@ -57,7 +57,9 @@ class psw_xx_xx(object):
             self.setDelimiter(b'\r\n')
     
     def close(self):
-        self.serial.close()
+        with self.lock:
+            if self.serial and self.serial.is_open:
+                self.serial.close()
 
     def setTimeout(self, timeout):
         if hasattr(self.serial, 'setTimeout') and \
@@ -93,9 +95,9 @@ class psw_xx_xx(object):
         """
         APPLy self.voltage,current
         """
-        if self.voltage == 0:
-            self.voltage = self.getVoltage()
         with self.lock:
+            if self.voltage == 0:
+                self.voltage = self.getVoltage()
             self.serial.write(b'APPLy %.3f,%.3f\n' % (self.voltage, current))
             self.serial.flush()
             self.current = current
@@ -125,9 +127,9 @@ class psw_xx_xx(object):
         """
         APPLy voltage,self.current
         """
-        if self.current == 0:
-            self.current = self.getCurrent()
         with self.lock:
+            if self.current == 0:
+                self.current = self.getCurrent()
             self.serial.write(b'APPLy %.3f,%.3f\n' % (voltage, self.current))
             self.serial.flush()
             self.voltage = voltage
