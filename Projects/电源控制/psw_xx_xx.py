@@ -7,6 +7,7 @@ import serial
 import sys
 import time
 import threading
+import functools
 
 class MySerial(serial.Serial):
     """
@@ -20,6 +21,19 @@ class MySerial(serial.Serial):
     else:
         pass
 
+def _auto_reconnect(func):
+    """装饰器：串口操作遇到SerialException时自动重连并重试一次，其它异常直接抛出"""
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except serial.SerialException as e:
+            print(f"串口操作异常，尝试自动重连: {e}")
+            if self._reconnect():
+                return func(self, *args, **kwargs)
+            raise
+    return wrapper
+
 class psw_xx_xx(object):
     def __init__(self):
         self.__baudRate = 9600 # 9600 bps
@@ -32,8 +46,14 @@ class psw_xx_xx(object):
         self.voltage = 0
         self.current = 0
         self.lock = threading.RLock()
+        self._port_name = None
+        self._read_timeout = 1
+        self._write_timeout = 1
 
     def open(self, port, readTimeOut = 1, writeTimeOut = 1):
+        self._port_name = port
+        self._read_timeout = readTimeOut
+        self._write_timeout = writeTimeOut
         self.serial = MySerial(port         = port,
                                baudrate     = self.__baudRate,
                                bytesize     = self.__dataBit,
@@ -60,6 +80,33 @@ class psw_xx_xx(object):
         with self.lock:
             if self.serial and self.serial.is_open:
                 self.serial.close()
+
+    def _reconnect(self):
+        """尝试关闭并重新打开串口"""
+        if not self._port_name:
+            return False
+        with self.lock:
+            try:
+                if self.serial and self.serial.is_open:
+                    self.serial.close()
+            except Exception:
+                pass
+            time.sleep(0.5)
+            try:
+                self.serial = MySerial(
+                    port         = self._port_name,
+                    baudrate     = self.__baudRate,
+                    bytesize     = self.__dataBit,
+                    parity       = self.__parityBit,
+                    stopbits     = self.__stopBit,
+                    timeout      = self._read_timeout,
+                    writeTimeout = self._write_timeout,
+                    dsrdtr       = self.__dataFlowControl)
+                print(f"串口{self._port_name}重连成功")
+                return True
+            except Exception as e:
+                print(f"串口{self._port_name}重连失败: {e}")
+                return False
 
     def setTimeout(self, timeout):
         if hasattr(self.serial, 'setTimeout') and \
@@ -91,6 +138,7 @@ class psw_xx_xx(object):
         
         return True
 
+    @_auto_reconnect
     def setCurrent(self, current):
         """
         APPLy self.voltage,current
@@ -106,6 +154,7 @@ class psw_xx_xx(object):
         # if err != b'+0,"No error"':
         #     raise RuntimeError(err)
         
+    @_auto_reconnect
     def getCurrent(self):
         """
         APPLy?
@@ -123,6 +172,7 @@ class psw_xx_xx(object):
         # print(ret)
             return float(ret.decode().split(',')[1])
 
+    @_auto_reconnect
     def setVoltage(self, voltage):
         """
         APPLy voltage,self.current
@@ -138,6 +188,7 @@ class psw_xx_xx(object):
         # if err != b'+0,"No error"':
         #     raise RuntimeError(err)
         
+    @_auto_reconnect
     def getVoltage(self):
         """
         APPLy?
@@ -153,6 +204,7 @@ class psw_xx_xx(object):
 
             return float(ret.decode().split(',')[0])
 
+    @_auto_reconnect
     def getCurrentOutput(self):
         """
         MEASure[:SCALar]:CURRent[:DC]?
@@ -169,6 +221,7 @@ class psw_xx_xx(object):
             return float(ret.decode())
 
 
+    @_auto_reconnect
     def getVoltageOutput(self):
         """
         MEASure[:SCALar]:VOLTage[:DC]? 
@@ -185,6 +238,7 @@ class psw_xx_xx(object):
             return float(ret.decode())
     
 
+    @_auto_reconnect
     def getOutput(self):
         """
         MEASure[:SCALar]:VOLTage[:DC]?\n
@@ -208,6 +262,7 @@ class psw_xx_xx(object):
             return [ret["电压"], ret["电流"]]
 
 
+    @_auto_reconnect
     def enableOutput(self, enable = True):
         """
         OUTPut <bool>
