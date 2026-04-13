@@ -27,16 +27,21 @@ else:
 
 class Tool():
 
-    def port_check(combox):
+    def port_check(combox, type:str="long"):
         # 检测所有存在的串口，将信息存储在字典中
         print("开始检测串口")
         Com_Dict.clear()
         port_list = list(serial.tools.list_ports.comports())
         combox.clear()
         for port in port_list:
-            if "USB 串行设备" in port[1]:
-                Com_Dict["%s" % port[0]] = "%s" % port[1]
-                combox.addItem(port[0])
+            if type == "long":
+                if "USB 串行设备" in port[1]:
+                    Com_Dict["%s" % port[0]] = "%s" % port[1]
+                    combox.addItem(port[0])
+            else:
+                if "USB Serial Port" in port[1]:
+                    Com_Dict["%s" % port[0]] = "%s" % port[1]
+                    combox.addItem(port[0])
         if len(Com_Dict) == 0:
             print("无串口")
             return False

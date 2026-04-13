@@ -33,6 +33,7 @@ from .tool import Tool
 TOTAL_SEC=20 #图上显示的时间时间长度
 TIME_GAP=25 #采样间隔TIME_GAP个点取一个数字
 POINT_NUM=int(100/25*TOTAL_SEC) #图上显示的点数
+MAX_PLOT_FAILURES=1 #采集数据最大连续失败次数
 
 class SquarePower(QtWidgets.QWidget,Ui_Form):
     instances = []
@@ -61,6 +62,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.lagtime = 1
         self.ch1_safty = 100
         self.ch2_safty = 100
+        self.start_time = None
         self.GPD = GPD3303S()
 
 
@@ -69,7 +71,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.VoutCol = [self.line, self.CH1_V_print, self.CH2_V_print]
         self.IoutCol = [self.line, self.CH1_I_print, self.CH2_I_print]
 
-        self.portcheck.clicked.connect(lambda: Tool.port_check(self.portchoose))
+        self.portcheck.clicked.connect(lambda: Tool.port_check(self.portchoose, type="square"))
         self.portopen.clicked.connect(self.power_port_open)
         self.portclose.clicked.connect(self.power_port_close)
         self.CH1_V_send.clicked.connect(lambda: self.V_set(1))
@@ -93,6 +95,11 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.channel1_signal.connect(lambda x: self.channel1_layout.updateData(x))
         self.channel2_signal.connect(lambda x: self.channel2_layout.updateData(x))
 
+        self.ch1_currentV = 0
+        self.ch2_currentV = 0
+        self.ch1_currentI = 0
+        self.ch2_currentI = 0
+
         self.sigInfo.connect(self.show_msg)
 
         #初始化右侧绘图
@@ -107,7 +114,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
 
         self.plot_thread = threading.Thread(target=self.plot_callback)
 
-        Tool.port_check(self.portchoose)
+        Tool.port_check(self.portchoose, type="square")
 
     def power_port_open(self):
         try:
@@ -135,7 +142,10 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     def V_set(self, ch, voltage=None):
         # 设置电压
         if voltage is None:
-            voltage = float(self.VsetCol[ch].text())
+            value = self.VsetCol[ch].text()
+            if value == "":
+                return
+            voltage = float(value)
         self.GPD.setVoltage(ch, voltage)
         self.sigInfo.emit(f"已设置{ch}通道电压为{voltage}")
 
@@ -143,7 +153,10 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     def I_set(self, ch, current=None):
         # 设置电流
         if current is None:
-            current = float(self.IsetCol[ch].text())
+            value = self.IsetCol[ch].text()
+            if value == "":
+                return
+            current = float(value)
         self.GPD.setCurrent(ch, current)
         self.sigInfo.emit(f"已设置{ch}通道电流为{current}")
 
@@ -151,8 +164,14 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     def sendALLData(self):
         # 发送全部数据
         for i in range(1,3):
-            self.V_set(i)
-            self.I_set(i)
+            value = self.VsetCol[i].text()
+            if value == "":
+                return
+            self.V_set(i, float(value))
+            value = self.IsetCol[i].text()
+            if value == "":
+                return
+            self.I_set(i, float(value))
         self.sigInfo.emit(f"已发送全部数据")
 
     def V_get(self, ch):
@@ -210,6 +229,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.sigInfo.emit(f"已打开电源输出")
         time.sleep(1)
         self.isOutput = True
+        self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3] if self.start_time is None else self.start_time
         self.start_plot()
         # self.start_plot()
 
@@ -222,37 +242,63 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.GPD.enableOutput(False)
         self.sigInfo.emit(f"已关闭电源输出")
         self.isOutput = False
+        self.ch1_currentV = 0
+        self.ch2_currentV = 0
+        self.ch1_currentI = 0
+        self.ch2_currentI = 0
+        self.start_time = None
 
 
     def plot_callback(self):
         CH = [{"电压": 0, "电流": 0}, {"电压": 0, "电流": 0}, {"电压": 0, "电流": 0}]
         safty = [self.ch1_safty, self.ch2_safty]
+        fail_count = 0
         while not self.StopFlag:
-            for i in range(1,3):
-               CH[i]["电压"] = self.V_get(i)
-               CH[i]["电流"] = self.I_get(i)
-               if CH[i]["电流"] >= safty[i-1]:
-                   self.GPD.enableOutput(False)
-                   self.StopFlag = True
-                   self.current_warn.emit(f"{self.name}", f"CH{i}", f"{CH[i]["电流"]}")
-            # self.channel1_layout.updateData(CH[1])
-            # self.channel2_layout.updateData(CH[2])
-            self.channel1_signal.emit(CH[1])
-            self.channel2_signal.emit(CH[2])
-            # 创建一个CSV文件，保存采集的数据
-            if not os.path.exists(f"./电源采集数据/"):
-                os.mkdir(f"./电源采集数据/")
-            if not os.path.exists(f"./电源采集数据/{self.name}.csv"):
-                with open(f"./电源采集数据/{self.name}_{time.strftime('%Y-%m-%d', time.localtime(time.time()))}.csv", "w", encoding='gbk') as f:
-                    f.write("时间,CH1电压,电流,CH2电压,电流\n")
-            with open(f"./电源采集数据/{self.name}_{time.strftime('%Y-%m-%d', time.localtime(time.time()))}.csv", "a", encoding='gbk') as f:
-                f.write(f"{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},{CH[1]['电压']},{CH[1]['电流']},{CH[2]['电压']},{CH[2]['电流']}\n")
+            try:
+                fail_count = 0
+                for i in range(1,3):
+                    CH[i]["电压"] = self.V_get(i)
+                    CH[i]["电流"] = self.I_get(i)
+                    if CH[i]["电流"] >= safty[i-1]:
+                        self.GPD.enableOutput(False)
+                        self.StopFlag = True
+                        self.current_warn.emit(f"{self.name}", f"CH{i}", f"{CH[i]["电流"]}")
+                # self.channel1_layout.updateData(CH[1])
+                # self.channel2_layout.updateData(CH[2])
+                self.channel1_signal.emit(CH[1])
+                self.channel2_signal.emit(CH[2])
+                self.ch1_currentV = CH[1]["电压"]
+                self.ch2_currentV = CH[2]["电压"]
+                self.ch1_currentI = CH[1]["电流"]
+                self.ch2_currentI = CH[2]["电流"]
+                # 创建一个CSV文件，保存采集的数据
+                if not os.path.exists(f"./电源采集数据/"):
+                    os.mkdir(f"./电源采集数据/")
+                try:
+                    if not os.path.exists(f"./电源采集数据/{self.name}_{self.start_time}.csv"):
+                        with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "w", encoding='gbk') as f:
+                            f.write("时间,CH1电压,电流,CH2电压,电流\n")
+                    with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "a", encoding='gbk') as f:
+                        f.write(f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},{CH[1]['电压']},{CH[1]['电流']},{CH[2]['电压']},{CH[2]['电流']}\n")
+                except PermissionError as e:   # 文件被占用
+                    self.sigInfo.emit(f"文件被占用，无法写入数据: {e}")
+                    time.sleep(1)
+                    continue
+            except Exception as e:
+                fail_count += 1
+                self.sigInfo.emit(f"采集数据异常({fail_count}/{MAX_PLOT_FAILURES}): {e}")
+                if fail_count >= MAX_PLOT_FAILURES:
+                    self.sigInfo.emit("串口连续异常，已自动停止采集")
+                    self.StopFlag = True
+                    self.power_port_close()
+                    break
             # 采集间隔
             time.sleep(0.1)
 
     def start_plot(self):
         # 启动动态画图
         self.StopFlag = False
+        self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3] if self.start_time is None else self.start_time
         if not self.plot_thread.is_alive():
             self.plot_thread = threading.Thread(target=self.plot_callback)
             self.plot_thread.start()
@@ -269,10 +315,14 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
             self.sigInfo.emit(f"已关闭采集")
         else:
             self.sigInfo.emit(f"采集已关闭")
+        self.start_time = None
 
 
     def checkplot(self):
         return self.plot_thread.is_alive()
+
+    def save_data(self):
+        return [[datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3], self.ch1_currentV, self.ch1_currentI, self.ch2_currentV, self.ch2_currentI]]
         
 
     @classmethod
