@@ -3,6 +3,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+<<<<<<< HEAD
 #pyqtSignal 可以跨现场，不管是QThread还是threading，前提是槽函数属于图形界面类子函数
 import multiprocessing
 import sys
@@ -44,5 +45,50 @@ def main():
 
 if __name__ == '__main__':
 
+=======
+import multiprocessing
+import sys
+import traceback
+
+from PyQt5 import QtCore, QtWidgets
+
+from Projects.电源控制.UpperPC import UpperPcWin
+from Projects.电源控制.operation_logger import OperationLogger
+from Projects.电源控制.tool import Tool
+
+
+class QSSLoader:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def read_qss_file(qss_file_name):
+        with open(qss_file_name, "r", encoding="UTF-8") as file:
+            return file.read()
+
+
+def main():
+    try:
+        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
+
+        app = QtWidgets.QApplication(sys.argv)
+        operation_logger = OperationLogger(app)
+        app.setProperty("operation_logger", operation_logger)
+        app.installEventFilter(operation_logger)
+
+        Tool.check_config()
+        mainWind = UpperPcWin()
+        mainWind.show()
+        mainWind.initUi()
+
+        operation_logger.install_action_logging(mainWind)
+        operation_logger.install_widget_logging(mainWind)
+        sys.exit(app.exec_())
+    except Exception:
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+>>>>>>> 3e78017 (initial commit)
     multiprocessing.freeze_support()
     main()
