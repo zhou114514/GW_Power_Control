@@ -27,28 +27,38 @@ else:
 
 class Tool():
 
-    def port_check(combox, type:str="long"):
-        # 检测所有存在的串口，将信息存储在字典中
+    def port_check(combox):
+        # 列出系统识别到的全部串口，不依赖某一种固定的设备描述文本。
+        # 旧逻辑只匹配“USB 串行设备”，会漏掉 CH340、Prolific、
+        # FTDI 或厂商自定义名称的正常串口。
         print("开始检测串口")
+        current_port = combox.currentText().strip()
         Com_Dict.clear()
-        port_list = list(serial.tools.list_ports.comports())
+        port_list = sorted(
+            serial.tools.list_ports.comports(),
+            key=lambda port: getattr(port, "device", str(port))
+        )
         combox.clear()
         for port in port_list:
-            if type == "long":
-                if "USB 串行设备" in port[1]:
-                    Com_Dict["%s" % port[0]] = "%s" % port[1]
-                    combox.addItem(port[0])
-            else:
-                if "USB Serial Port" in port[1]:
-                    Com_Dict["%s" % port[0]] = "%s" % port[1]
-                    combox.addItem(port[0])
+            port_name = getattr(port, "device", "")
+            if not port_name:
+                continue
+
+            port_desc = getattr(port, "description", "") or port_name
+            Com_Dict[port_name] = port_desc
+            combox.addItem(port_name)
+
         if len(Com_Dict) == 0:
             print("无串口")
             return False
+
+        if current_port and current_port in Com_Dict:
+            combox.setCurrentText(current_port)
         else:
             combox.setCurrentIndex(0)
-            print("串口列表：", Com_Dict)
-            return True
+
+        print("串口列表：", Com_Dict)
+        return True
 
     # 串口信息
     def port_imf(combox):
@@ -76,37 +86,104 @@ class Tool():
             config.set("TCP", "auto_connect", "True")
             config.add_section("Serial")
             config.set("Serial", "power_supply_square1", "COM")
-            config.set("Serial", "power_supply_square2", "COM")
-            config.set("Serial", "power_supply_square3", "COM")
-            config.set("Serial", "power_supply_square4", "COM")
             config.set("Serial", "power_supply_long", "COM")
+            config.set("Serial", "power_supply_gpp", "COM")
             config.set("Serial", "auto_connect", "False")
             config.set("Serial", "auto_output", "False")
             config.add_section("Additional")
             config.set("Additional", "power_add", "False")
             config.set("Additional", "power_del", "False")
+            config.add_section("CustomPower")
+            config.set("CustomPower", "items", "[]")
+            config.add_section("Update")
+            config.set("Update", "enabled", "True")
+            config.set("Update", "check_on_startup", "True")
+            config.set("Update", "manifest_url", "")
+            config.set("Update", "request_timeout", "3")
             config.add_section("Safty")
             config.set("Safty", "current_limit1_ch1", "100")
             config.set("Safty", "current_limit1_ch2", "100")
-            config.set("Safty", "current_limit2_ch1", "100")
-            config.set("Safty", "current_limit2_ch2", "100")
-            config.set("Safty", "current_limit3_ch1", "100")
-            config.set("Safty", "current_limit3_ch2", "100")
-            config.set("Safty", "current_limit4_ch1", "100")
-            config.set("Safty", "current_limit4_ch2", "100")
             config.set("Safty", "current_limit5_ch1", "100")
+            config.set("Safty", "current_limit_gpp_ch1", "100")
+            config.set("Safty", "current_limit_gpp_ch2", "100")
             with open(config_path, "w", encoding="utf-8") as f:
                 config.write(f)
             return False
         else:
+            config = configparser.ConfigParser()
+            config.read(config_path, encoding="utf-8")
+            changed = False
+
+            if not config.has_section("Serial"):
+                config.add_section("Serial")
+                changed = True
+
+            serial_defaults = {
+                "power_supply_square1": "COM",
+                "power_supply_long": "COM",
+                "power_supply_gpp": "COM",
+                "auto_connect": "False",
+                "auto_output": "False",
+            }
+            for key, value in serial_defaults.items():
+                if not config.has_option("Serial", key):
+                    config.set("Serial", key, value)
+                    changed = True
+
+            if not config.has_section("Update"):
+                config.add_section("Update")
+                changed = True
+
+            update_defaults = {
+                "enabled": "False",
+                "check_on_startup": "True",
+                "manifest_url": "",
+                "request_timeout": "3",
+            }
+            for key, value in update_defaults.items():
+                if not config.has_option("Update", key):
+                    config.set("Update", key, value)
+                    changed = True
+
+            if not config.has_section("Safty"):
+                config.add_section("Safty")
+                changed = True
+
+            safety_defaults = {
+                "current_limit1_ch1": "100",
+                "current_limit1_ch2": "100",
+                "current_limit5_ch1": "100",
+                "current_limit_gpp_ch1": "100",
+                "current_limit_gpp_ch2": "100",
+            }
+            for key, value in safety_defaults.items():
+                if not config.has_option("Safty", key):
+                    config.set("Safty", key, value)
+                    changed = True
+
+            if changed:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    config.write(f)
             return True
         
     def read_config(get_key):
         # 读取配置文件
         config_path = root_path + "\\Auto_config.ini"
         config = configparser.ConfigParser()
-        config.read(config_path)
+        config.read(config_path, encoding="utf-8")
         return dict(config.items(get_key))
+
+    def update_config_option(section, option, value):
+        config_path = root_path + "\\Auto_config.ini"
+        config = configparser.ConfigParser()
+        config.read(config_path, encoding="utf-8")
+
+        if not config.has_section(section):
+            config.add_section(section)
+
+        config.set(section, option, str(value))
+        with open(config_path, "w", encoding="utf-8") as f:
+            config.write(f)
     
     def init_execl_list():
         # 获取execl文件列表

@@ -3,49 +3,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-<<<<<<< HEAD
-#pyqtSignal 可以跨现场，不管是QThread还是threading，前提是槽函数属于图形界面类子函数
-import multiprocessing
-import sys
-from PyQt5 import QtWidgets, QtCore
-from Projects.电源控制.UpperPC import UpperPcWin
+# pyqtSignal 可以跨线程，不管是 QThread 还是 threading，
+# 前提是槽函数属于图形界面类的成员函数。
 
-from Projects.电源控制.tool import Tool
-
-
-# for files in os.listdir(r"D:\Coding\python\UpperPcnew\Confiles\九江U转台"):  # 不仅仅是文件，当前目录下的文件夹也会被认为遍历到
-#     if os.path.isdir(r"D:\Coding\python\UpperPcnew\Confiles\九江U转台"+"\\"+files ):
-
-
-class QSSLoader:
-    def __init__(self):
-        pass
-    @staticmethod
-    def read_qss_file(qss_file_name):
-        with open(qss_file_name, 'r',  encoding='UTF-8') as file:
-            return file.read()
-def main():
-
-    try:
-        import os
-        #不加这一行就会界面很小198
-        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
-
-        app = QtWidgets.QApplication(sys.argv)
-
-        Tool.check_config()
-        mainWind = UpperPcWin()
-
-        mainWind.show()
-        mainWind.initUi() #show以后才能加载子页面
-
-        sys.exit(app.exec_())
-    except Exception as e:
-        print(e)
-
-if __name__ == '__main__':
-
-=======
 import multiprocessing
 import sys
 import traceback
@@ -58,9 +18,6 @@ from Projects.电源控制.tool import Tool
 
 
 class QSSLoader:
-    def __init__(self):
-        pass
-
     @staticmethod
     def read_qss_file(qss_file_name):
         with open(qss_file_name, "r", encoding="UTF-8") as file:
@@ -69,6 +26,7 @@ class QSSLoader:
 
 def main():
     try:
+        # 不加这一行时，高 DPI 环境下界面会显示过小。
         QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
 
         app = QtWidgets.QApplication(sys.argv)
@@ -77,18 +35,17 @@ def main():
         app.installEventFilter(operation_logger)
 
         Tool.check_config()
-        mainWind = UpperPcWin()
-        mainWind.show()
-        mainWind.initUi()
+        main_window = UpperPcWin()
+        main_window.show()
+        main_window.initUi()
 
-        operation_logger.install_action_logging(mainWind)
-        operation_logger.install_widget_logging(mainWind)
+        operation_logger.install_action_logging(main_window)
+        operation_logger.install_widget_logging(main_window)
         sys.exit(app.exec_())
     except Exception:
         traceback.print_exc()
 
 
 if __name__ == "__main__":
->>>>>>> 3e78017 (initial commit)
     multiprocessing.freeze_support()
     main()
