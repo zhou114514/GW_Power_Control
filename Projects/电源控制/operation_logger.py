@@ -5,7 +5,7 @@ import json
 import os
 import threading
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtWidgets, sip
 
 
 class OperationLogger(QtCore.QObject):
@@ -70,9 +70,11 @@ class OperationLogger(QtCore.QObject):
         line_edit.setProperty("_oplog_user_edited", False)
         line_edit.textEdited.connect(
             lambda _text, target=line_edit: target.setProperty("_oplog_user_edited", True)
+            if self._is_valid(target) else None
         )
         line_edit.editingFinished.connect(
             lambda target=line_edit: self._log_line_edit_if_changed(target)
+            if self._is_valid(target) else None
         )
 
     def track_combo_box(self, combo_box):
@@ -99,7 +101,7 @@ class OperationLogger(QtCore.QObject):
         if event.type() == QtCore.QEvent.ChildAdded and hasattr(event, "child"):
             self._auto_track_object(event.child())
 
-        if isinstance(watched, QtWidgets.QLineEdit):
+        if isinstance(watched, QtWidgets.QLineEdit) and self._is_valid(watched):
             if event.type() == QtCore.QEvent.FocusIn:
                 watched.setProperty("_oplog_focus_text", watched.text())
                 watched.setProperty("_oplog_user_edited", False)
@@ -109,6 +111,8 @@ class OperationLogger(QtCore.QObject):
         return super(OperationLogger, self).eventFilter(watched, event)
 
     def log_button(self, button, checked=None):
+        if not self._is_valid(button):
+            return
         data = {
             "type": "button",
             "window": self._get_window_title(button),
@@ -120,6 +124,8 @@ class OperationLogger(QtCore.QObject):
         self._write_log(data)
 
     def log_action(self, action, checked=None):
+        if not self._is_valid(action):
+            return
         data = {
             "type": "action",
             "window": self._get_window_title(action),
@@ -131,6 +137,8 @@ class OperationLogger(QtCore.QObject):
         self._write_log(data)
 
     def log_combo_box(self, combo_box, index):
+        if not self._is_valid(combo_box):
+            return
         data = {
             "type": "combo_box",
             "window": self._get_window_title(combo_box),
@@ -141,6 +149,8 @@ class OperationLogger(QtCore.QObject):
         self._write_log(data)
 
     def log_check_box(self, check_box, checked):
+        if not self._is_valid(check_box):
+            return
         data = {
             "type": "check_box",
             "window": self._get_window_title(check_box),
@@ -151,7 +161,7 @@ class OperationLogger(QtCore.QObject):
         self._write_log(data)
 
     def _log_line_edit_if_changed(self, line_edit):
-        if line_edit is None:
+        if not self._is_valid(line_edit):
             return
 
         user_edited = bool(line_edit.property("_oplog_user_edited"))
@@ -221,6 +231,15 @@ class OperationLogger(QtCore.QObject):
             return str(value)
         return json.dumps(str(value), ensure_ascii=False)
 
+    def _is_valid(self, obj):
+        """检查 Qt 对象的 C++ 底层是否仍然存活，防止 use-after-free 崩溃。"""
+        if obj is None:
+            return False
+        try:
+            return not sip.isdeleted(obj)
+        except Exception:
+            return False
+
     def _get_object_name(self, obj):
         if obj is None:
             return "<no-object>"
@@ -253,6 +272,9 @@ class OperationLogger(QtCore.QObject):
                     widget = parent
 
         if widget is None:
+            return ""
+
+        if not self._is_valid(widget):
             return ""
 
         window = widget.window()
