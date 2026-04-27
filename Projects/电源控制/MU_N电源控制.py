@@ -57,6 +57,10 @@ class MUNPower(QtWidgets.QWidget):
         self.channel_name_edits = {}
         self.channel_plots = {}
         self._signals_bound = False
+        self._output_delay_timer = None
+        self._output_delay_channels = []
+        self._output_delay_index = 0
+        self.OUTPUT_CHANNEL_DELAY_MS = 4000
 
         self._build_ui()
         self.load_limit_config()
@@ -583,13 +587,60 @@ class MUNPower(QtWidgets.QWidget):
         finally:
             self.mun.channel_count = original_count
 
-    def _set_visible_outputs(self, enable):
-        if enable:
-            self._best_effort_disable_hidden_channels()
-            for channel in self._visible_channels():
-                self.mun.enableOutput(True, channel)
+    def _stop_output_delay_timer(self):
+        timer = getattr(self, "_output_delay_timer", None)
+        self._output_delay_timer = None
+        self._output_delay_channels = []
+        self._output_delay_index = 0
+        if timer is None:
+            return
+        try:
+            if timer.isActive():
+                timer.stop()
+            timer.deleteLater()
+        except Exception:
+            pass
+
+    def _start_sequential_output(self):
+        """Enable visible channels one by one without blocking the UI."""
+        self._stop_output_delay_timer()
+        self._best_effort_disable_hidden_channels()
+        self._output_delay_channels = list(self._visible_channels())
+        self._output_delay_index = 0
+
+        if not self._output_delay_channels:
             return
 
+        self._enable_next_channel()
+
+        if len(self._output_delay_channels) > 1:
+            self._output_delay_timer = QtCore.QTimer(self)
+            self._output_delay_timer.timeout.connect(self._enable_next_channel)
+            self._output_delay_timer.start(self.OUTPUT_CHANNEL_DELAY_MS)
+
+    def _enable_next_channel(self):
+        """Enable the next queued channel and stop the timer when finished."""
+        if self._output_delay_index >= len(self._output_delay_channels):
+            self._stop_output_delay_timer()
+            return
+
+        channel = self._output_delay_channels[self._output_delay_index]
+        try:
+            self.mun.enableOutput(True, channel)
+            self.sigInfo.emit(f"CH{channel} 已开启输出")
+        except Exception as e:
+            self.sigInfo.emit(f"CH{channel} 开启输出失败: {e}")
+
+        self._output_delay_index += 1
+        if self._output_delay_index >= len(self._output_delay_channels):
+            self._stop_output_delay_timer()
+
+    def _set_visible_outputs(self, enable):
+        if enable:
+            self._start_sequential_output()
+            return
+
+        self._stop_output_delay_timer()
         for channel in self._visible_channels():
             self.mun.enableOutput(False, channel)
         self.mun.enableOutput(False)
@@ -695,6 +746,7 @@ class MUNPower(QtWidgets.QWidget):
     def power_port_close(self):
         if self.plot_thread.is_alive():
             self.close_plot()
+        self._stop_output_delay_timer()
         try:
             self.mun.close()
         finally:
@@ -936,7 +988,7 @@ class MUNPower(QtWidgets.QWidget):
             self.sigInfo.emit("已关闭采集")
         else:
             self.sigInfo.emit("采集已关闭")
-        self.btn_Control(True, self.isOutput, False, False)
+        self.btn_Control(True, self.isOutput, True, False)
 
     def checkplot(self):
         return self.plot_thread.is_alive()
@@ -1006,5 +1058,6 @@ class MUNPower(QtWidgets.QWidget):
         return cls.instances
 
     def __del__(self):
+        self._stop_output_delay_timer()
         if self in self.instances:
             self.instances.remove(self)
