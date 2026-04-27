@@ -335,6 +335,7 @@ class Ui_Form(object):
         self.gridLayout_2.addWidget(self.Plot, 0, 1, 1, 1)
         self.horizontalLayout.addWidget(self.gridWidget)
         self.gridLayout.addLayout(self.horizontalLayout, 0, 0, 1, 1)
+        self.gridLayout.setColumnStretch(0, 1)
         self.line_2 = QtWidgets.QFrame(Form)
         self.line_2.setFrameShape(QtWidgets.QFrame.VLine)
         self.line_2.setFrameShadow(QtWidgets.QFrame.Sunken)
