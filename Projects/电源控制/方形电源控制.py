@@ -1,15 +1,10 @@
-'''
-@工程 ：UpperPc 
-@文件 ：电源控制.py
-@作者 ：FTFH3
-@日期 ：2023/10/10 15:30 
-@功能 ：
-@方法 ：
+"""
+方形电源控制模块。
 
 This Source Code Form is subject to the terms of the Mozilla Public
 License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at https://mozilla.org/MPL/2.0/.
-'''
+"""
 from datetime import datetime
 import threading,dill
 import time,os
@@ -30,10 +25,12 @@ from .gpd3303s import GPD3303S
 from .MyPlot import MyPlot
 from .tool import Tool
 
-TOTAL_SEC=20 #图上显示的时间时间长度
-TIME_GAP=25 #采样间隔TIME_GAP个点取一个数字
-POINT_NUM=int(100/25*TOTAL_SEC) #图上显示的点数
-MAX_PLOT_FAILURES=1 #采集数据最大连续失败次数
+TOTAL_SEC = 20
+TIME_GAP = 25
+POINT_NUM = int(100 / TIME_GAP * TOTAL_SEC)
+PLOT_VOLTAGE_KEY = "电压"
+PLOT_CURRENT_KEY = "电流"
+DATA_DIR = os.path.join(".", "电源采集数据")
 
 class SquarePower(QtWidgets.QWidget,Ui_Form):
     instances = []
@@ -62,7 +59,6 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.lagtime = 1
         self.ch1_safty = 100
         self.ch2_safty = 100
-        self.start_time = None
         self.GPD = GPD3303S()
 
 
@@ -71,7 +67,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.VoutCol = [self.line, self.CH1_V_print, self.CH2_V_print]
         self.IoutCol = [self.line, self.CH1_I_print, self.CH2_I_print]
 
-        self.portcheck.clicked.connect(lambda: Tool.port_check(self.portchoose, type="square"))
+        self.portcheck.clicked.connect(lambda: Tool.port_check(self.portchoose))
         self.portopen.clicked.connect(self.power_port_open)
         self.portclose.clicked.connect(self.power_port_close)
         self.CH1_V_send.clicked.connect(lambda: self.V_set(1))
@@ -95,28 +91,33 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.channel1_signal.connect(lambda x: self.channel1_layout.updateData(x))
         self.channel2_signal.connect(lambda x: self.channel2_layout.updateData(x))
 
-        self.ch1_currentV = 0
-        self.ch2_currentV = 0
-        self.ch1_currentI = 0
-        self.ch2_currentI = 0
-
         self.sigInfo.connect(self.show_msg)
 
-        #初始化右侧绘图
-        da = {"电压": [], "电流": []}
-        self.channel1_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)  #动态画图 通道1
+        # 初始化右侧图表
+        da = {PLOT_VOLTAGE_KEY: [], PLOT_CURRENT_KEY: []}
+        self.channel1_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)
         self.channel1.addWidget( self.channel1_layout)
 
 
-        da = {"电压": [], "电流": []}
-        self.channel2_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)  #动态画图 通道2
+        da = {PLOT_VOLTAGE_KEY: [], PLOT_CURRENT_KEY: []}
+        self.channel2_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)
         self.channel2.addWidget( self.channel2_layout)
 
         self.plot_thread = threading.Thread(target=self.plot_callback)
 
-        Tool.port_check(self.portchoose, type="square")
+        Tool.port_check(self.portchoose)
 
     def power_port_open(self):
+        re = self.port_open()
+        if re[0]:
+            QMessageBox.information(self, "提示", f"已连接 {self.portchoose.currentText()}\nCH1：{re[1]}V\nCH2：{re[2]}V")
+
+    def port_open(self, show_error=True):
+        if self.isConnected:
+            self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
+            if self.name == "方形电源":
+                Tool.update_config_option("Serial", "power_supply_square1", self.portchoose.currentText())
+            return [True, self.GPD.getVoltage(1), self.GPD.getVoltage(2)]
         try:
             # 连接电源
             self.GPD.open(self.portchoose.currentText())
@@ -127,9 +128,21 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
             self.CH2_name.setText(f"CH2：{ch2_v}V")
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
             self.isConnected = True
-            QMessageBox.information(self, "提示", f"已连接{self.portchoose.currentText()}！\nCH1：{ch1_v}V\nCH2：{ch2_v}V")
+            if self.name == "方形电源":
+                Tool.update_config_option("Serial", "power_supply_square1", self.portchoose.currentText())
+            return [True, ch1_v, ch2_v]
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"连接{self.portchoose.currentText()}失败，请检查端口是否正确！")
+            try:
+                if getattr(self.GPD, "serial", None):
+                    self.GPD.close()
+            except Exception:
+                pass
+            if show_error:
+                QMessageBox.warning(self, "错误", f"连接{self.portchoose.currentText()}失败，请检查端口是否正确！")
+            return [False, None, None]
+
+    def startup_port_open(self):
+        return self.port_open(show_error=False)
 
     
     def power_port_close(self):
@@ -142,66 +155,52 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     def V_set(self, ch, voltage=None):
         # 设置电压
         if voltage is None:
-            value = self.VsetCol[ch].text()
-            if value == "":
-                return
-            voltage = float(value)
+            voltage = float(self.VsetCol[ch].text())
         self.GPD.setVoltage(ch, voltage)
-        self.sigInfo.emit(f"已设置{ch}通道电压为{voltage}")
+        self.sigInfo.emit(f"已设置CH{ch}通道电压为{voltage}")
 
     
     def I_set(self, ch, current=None):
         # 设置电流
         if current is None:
-            value = self.IsetCol[ch].text()
-            if value == "":
-                return
-            current = float(value)
+            current = float(self.IsetCol[ch].text())
         self.GPD.setCurrent(ch, current)
-        self.sigInfo.emit(f"已设置{ch}通道电流为{current}")
+        self.sigInfo.emit(f"已设置CH{ch}通道电流为{current}")
 
 
     def sendALLData(self):
         # 发送全部数据
-        for i in range(1,3):
-            value = self.VsetCol[i].text()
-            if value == "":
-                return
-            self.V_set(i, float(value))
-            value = self.IsetCol[i].text()
-            if value == "":
-                return
-            self.I_set(i, float(value))
-        self.sigInfo.emit(f"已发送全部数据")
+        for i in range(1, 3):
+            self.V_set(i)
+            self.I_set(i)
+        self.sigInfo.emit("已发送全部数据")
 
     def V_get(self, ch):
-        # 获取电压
+        # 获取输出电压
         V = self.GPD.getVoltageOutput(ch)
-        if ch == 2 and self.name == '方形电源2':
-            V = V * -1
         # self.VoutCol[ch].clear()
-        self.VoutCol[ch].setText("电压："+str(V))
+        self.VoutCol[ch].setText("电压：" + str(V))
         return V
     
 
     def I_get(self, ch):
-        # 获取电流
+        # 获取输出电流
         I = self.GPD.getCurrentOutput(ch)
         # self.IoutCol[ch].clear()
-        self.IoutCol[ch].setText("电流："+str(I))
+        self.IoutCol[ch].setText("电流：" + str(I))
         return I
     
 
     def checkALLData(self):
         # 检查全部数据
         data = [[]]
-        for i in range(1,3):
+        for i in range(1, 3):
             V = self.V_get(i)
             I = self.I_get(i)
             # self.VoutCol[i].clear()
             # self.IoutCol[i].clear()
-            self.VoutCol[i].setText("电压："+str(V))
-            self.IoutCol[i].setText("电流："+str(I))
+            self.VoutCol[i].setText("电压：" + str(V))
+            self.IoutCol[i].setText("电流：" + str(I))
             data[0].append(str(V))
             data[0].append(str(I))
         return data
@@ -226,10 +225,9 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     def output_open(self):
         # 打开输出
         self.GPD.enableOutput()
-        self.sigInfo.emit(f"已打开电源输出")
+        self.sigInfo.emit("已打开电源输出")
         time.sleep(1)
         self.isOutput = True
-        self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3] if self.start_time is None else self.start_time
         self.start_plot()
         # self.start_plot()
 
@@ -240,71 +238,64 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
             self.StopFlag = True
             self.plot_thread.join()
         self.GPD.enableOutput(False)
-        self.sigInfo.emit(f"已关闭电源输出")
+        self.sigInfo.emit("已关闭电源输出")
         self.isOutput = False
-        self.ch1_currentV = 0
-        self.ch2_currentV = 0
-        self.ch1_currentI = 0
-        self.ch2_currentI = 0
-        self.start_time = None
 
 
     def plot_callback(self):
-        CH = [{"电压": 0, "电流": 0}, {"电压": 0, "电流": 0}, {"电压": 0, "电流": 0}]
+        CH = [
+            {PLOT_VOLTAGE_KEY: 0, PLOT_CURRENT_KEY: 0},
+            {PLOT_VOLTAGE_KEY: 0, PLOT_CURRENT_KEY: 0},
+            {PLOT_VOLTAGE_KEY: 0, PLOT_CURRENT_KEY: 0},
+        ]
         safty = [self.ch1_safty, self.ch2_safty]
         fail_count = 0
         while not self.StopFlag:
             try:
-                fail_count = 0
                 for i in range(1,3):
-                    CH[i]["电压"] = self.V_get(i)
-                    CH[i]["电流"] = self.I_get(i)
-                    if CH[i]["电流"] >= safty[i-1]:
-                        self.GPD.enableOutput(False)
-                        self.StopFlag = True
-                        self.current_warn.emit(f"{self.name}", f"CH{i}", f"{CH[i]["电流"]}")
-                # self.channel1_layout.updateData(CH[1])
-                # self.channel2_layout.updateData(CH[2])
+                   CH[i][PLOT_VOLTAGE_KEY] = self.V_get(i)
+                   CH[i][PLOT_CURRENT_KEY] = self.I_get(i)
+                   if CH[i][PLOT_CURRENT_KEY] >= safty[i-1]:
+                       self.GPD.enableOutput(False)
+                       self.StopFlag = True
+                       self.current_warn.emit(f"{self.name}", f"CH{i}", f"{CH[i][PLOT_CURRENT_KEY]}")
+
+                fail_count = 0
                 self.channel1_signal.emit(CH[1])
                 self.channel2_signal.emit(CH[2])
-                self.ch1_currentV = CH[1]["电压"]
-                self.ch2_currentV = CH[2]["电压"]
-                self.ch1_currentI = CH[1]["电流"]
-                self.ch2_currentI = CH[2]["电流"]
-                # 创建一个CSV文件，保存采集的数据
-                if not os.path.exists(f"./电源采集数据/"):
-                    os.mkdir(f"./电源采集数据/")
-                try:
-                    if not os.path.exists(f"./电源采集数据/{self.name}_{self.start_time}.csv"):
-                        with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "w", encoding='gbk') as f:
-                            f.write("时间,CH1电压,电流,CH2电压,电流\n")
-                    with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "a", encoding='gbk') as f:
-                        f.write(f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},{CH[1]['电压']},{CH[1]['电流']},{CH[2]['电压']},{CH[2]['电流']}\n")
-                except PermissionError as e:   # 文件被占用
-                    self.sigInfo.emit(f"文件被占用，无法写入数据: {e}")
-                    time.sleep(1)
-                    continue
+
+                os.makedirs(DATA_DIR, exist_ok=True)
+                csv_path = os.path.join(DATA_DIR, f"{self.name}_{self.start_time}.csv")
+                if not os.path.exists(csv_path):
+                    with open(csv_path, "w", encoding="gbk") as f:
+                        f.write("时间,CH1电压,电流,CH2电压,电流\n")
+                with open(csv_path, "a", encoding="gbk") as f:
+                    f.write(
+                        f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},"
+                        f"{CH[1][PLOT_VOLTAGE_KEY]},{CH[1][PLOT_CURRENT_KEY]},"
+                        f"{CH[2][PLOT_VOLTAGE_KEY]},{CH[2][PLOT_CURRENT_KEY]}\n"
+                    )
+
+                time.sleep(0.1)
             except Exception as e:
                 fail_count += 1
-                self.sigInfo.emit(f"采集数据异常({fail_count}/{MAX_PLOT_FAILURES}): {e}")
-                if fail_count >= MAX_PLOT_FAILURES:
+                self.sigInfo.emit(f"采集数据异常({fail_count}/3): {e}")
+                if fail_count >= 3:
                     self.sigInfo.emit("串口连续异常，已自动停止采集")
                     self.StopFlag = True
-                    self.power_port_close()
                     break
-            # 采集间隔
-            time.sleep(0.1)
+                time.sleep(1)
 
     def start_plot(self):
         # 启动动态画图
         self.StopFlag = False
-        self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3] if self.start_time is None else self.start_time
         if not self.plot_thread.is_alive():
+            self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3]
             self.plot_thread = threading.Thread(target=self.plot_callback)
             self.plot_thread.start()
-            self.sigInfo.emit(f"已开启采集")
+            self.sigInfo.emit("已开启采集")
         else:
-            self.sigInfo.emit(f"采集已开启")
+            self.sigInfo.emit("采集已开启")
 
 
     def close_plot(self):
@@ -312,17 +303,12 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         if self.plot_thread.is_alive():
             self.StopFlag = True
             self.plot_thread.join()
-            self.sigInfo.emit(f"已关闭采集")
+            self.sigInfo.emit("已关闭采集")
         else:
-            self.sigInfo.emit(f"采集已关闭")
-        self.start_time = None
-
+            self.sigInfo.emit("采集已关闭")
 
     def checkplot(self):
         return self.plot_thread.is_alive()
-
-    def save_data(self):
-        return [[datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3], self.ch1_currentV, self.ch1_currentI, self.ch2_currentV, self.ch2_currentI]]
         
 
     @classmethod

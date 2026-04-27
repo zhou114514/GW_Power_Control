@@ -209,6 +209,6 @@ __marimo__/
 .vscode/
 .idea/
 .svn/
-config.ini
+*.ini
 1.py
 电源采集数据/

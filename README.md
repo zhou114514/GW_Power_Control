@@ -78,8 +78,12 @@ auto_connect = True     # 是否自动连接
 #### 串口配置
 ```ini
 [Serial]
+<<<<<<< HEAD
 power_supply_square1 = COM    # 方形电源1串口
 power_supply_square2 = COM    # 方形电源2串口
+=======
+power_supply_square1 = COM    # 方形电源串口
+>>>>>>> 3e78017 (initial commit)
 power_supply_long = COM       # 长条电源串口
 auto_connect = False          # 是否自动连接串口
 auto_output = False           # 是否自动输出
@@ -88,8 +92,13 @@ auto_output = False           # 是否自动输出
 #### 安全限制
 ```ini
 [Safty]
+<<<<<<< HEAD
 current_limit1_ch1 = 100    # 方形电源1通道1电流限制(A)
 current_limit1_ch2 = 100    # 方形电源1通道2电流限制(A)
+=======
+current_limit1_ch1 = 100    # 方形电源通道1电流限制(A)
+current_limit1_ch2 = 100    # 方形电源通道2电流限制(A)
+>>>>>>> 3e78017 (initial commit)
 current_limit5_ch1 = 100    # 长条电源电流限制(A)
 ```
 
@@ -100,7 +109,24 @@ power_add = False     # 是否启用电源添加功能
 power_del = False     # 是否启用电源删除功能
 ```
 
+#### 更新检测
+```ini
+[Update]
+enabled = False                 # 是否启用启动时更新检测
+check_on_startup = True         # 启动时是否自动检查
+manifest_url =                  # 远端更新清单地址，可填 http(s) 或共享盘/本地 json 路径
+request_timeout = 3             # 检测超时时间（秒）
+```
+
 ## 📖 使用说明
+
+### 版本更新检测
+
+1. 准备更新清单文件，格式可参考 `update_manifest.example.json`
+2. 将清单放到 HTTP 地址、共享盘路径或本地路径
+3. 在 `Auto_config.ini` 的 `[Update]` 中填写 `manifest_url` 并将 `enabled` 设为 `True`
+4. 软件启动后会自动检测，若发现新版本会弹窗提示并可自动下载、替换并重启程序
+5. 更新包目前支持 `.zip` 和 `.exe`，其中 `.exe` 替换仅适用于打包后的程序
 
 ### 手动操作流程
 
@@ -273,4 +299,7 @@ power.I_set(1, 1.0)  # 通道1设置1A
 ---
 
 **注意**：本系统涉及电源控制，使用时请确保操作规范，注意安全！
+<<<<<<< HEAD
 
+=======
+>>>>>>> 3e78017 (initial commit)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'd:\code\蓝转台\Utility\MainWindow\MainWindow.ui'
+# Form implementation generated from reading ui file 'd:\code\钃濊浆鍙癨Utility\MainWindow\MainWindow.ui'
 #
 # Created by: PyQt5 UI code generator 5.15.11
 #
@@ -64,5 +64,5 @@ class Ui_MainWindow(object):
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
-        MainWindow.setWindowTitle(_translate("MainWindow", "地检软件"))
+        MainWindow.setWindowTitle(_translate("MainWindow", "光学头电源控制"))
         self.label.setText(_translate("MainWindow", "V2.0.7"))

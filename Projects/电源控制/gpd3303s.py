@@ -57,14 +57,18 @@ class GPD3303S(object):
         if err != b'No Error.':
             raise RuntimeError(err)
 
-        # 检查分隔符是否正确设置。
-        # 默认情况下，\r 是分隔符，但较新的 GPD3303S 使用 \r\n 作为分隔符。
+        # 当前实机返回格式是“前导 \\n + 结尾 \\r”。
+        # 旧逻辑在读到残留的换行符后把结束符切成 \\r\\n，
+        # 会导致后续 VSET?/IOUT? 读取错位，进而被误判为连接失败。
+        # 这里保留以 \\r 作为结束符，只把可能残留的单个换行读走。
+        self.setDelimiter(b'\r')
         self.setTimeout(0.1)
-        ret = self.serial.read(1)
-        self.setTimeout(readTimeOut)
-        
-        if ret == b'\n':
-            self.setDelimiter(b'\r\n')
+        try:
+            if self.serial.read(1) not in (b'', b'\n'):
+                if hasattr(self.serial, 'reset_input_buffer'):
+                    self.serial.reset_input_buffer()
+        finally:
+            self.setTimeout(readTimeOut)
     
     def close(self):
         self.serial.close()
@@ -203,7 +207,7 @@ class GPD3303S(object):
         self.serial.write(b'ERR?\n')
         ret = self.serial.readline(eol=self.eol)
         if ret != b'':
-            return ret[:-len(self.eol)]
+            return ret[:-len(self.eol)].strip()
         else:
             raise RuntimeError('Cannot read error message')
         
@@ -214,6 +218,4 @@ class GPD3303S(object):
         Because the delimiter setting has been changed. 
         """
         self.eol = eol
-
-
 

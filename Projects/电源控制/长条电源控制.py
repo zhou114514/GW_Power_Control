@@ -1,15 +1,10 @@
-'''
-@工程 ：UpperPc 
-@文件 ：电源控制.py
-@作者 ：FTFH3
-@日期 ：2023/10/12 16:30
-@功能 ：
-@方法 ：
+"""
+长条电源控制模块。
 
 This Source Code Form is subject to the terms of the Mozilla Public
 License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at https://mozilla.org/MPL/2.0/.
-'''
+"""
 from datetime import datetime
 import threading,dill
 import time,os,math
@@ -29,12 +24,14 @@ from .psw_xx_xx import psw_xx_xx
 from .MyPlot import MyPlot
 from .tool import Tool
 
-TOTAL_SEC=20 #图上显示的时间时间长度
-TIME_GAP=25 #采样间隔TIME_GAP个点取一个数字
-POINT_NUM=int(100/25*TOTAL_SEC) #图上显示的点数
-MAX_DEFLECTION_FAILURES=3 #拉偏操作最大连续失败次数
-MAX_PLOT_FAILURES=3 #采集数据最大连续失败次数
-
+TOTAL_SEC = 20
+TIME_GAP = 25
+POINT_NUM = int(100 / TIME_GAP * TOTAL_SEC)
+MAX_DEFLECTION_FAILURES = 3
+MAX_PLOT_FAILURES = 3
+PLOT_VOLTAGE_KEY = "电压"
+PLOT_CURRENT_KEY = "电流"
+DATA_DIR = os.path.join(".", "电源采集数据")
 class LongPower(QtWidgets.QWidget,Ui_Form):
     instances = []
     VsetCol = []
@@ -54,8 +51,14 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
     def __init__(self, name):
         super(LongPower,self).__init__()
         self.name = name
-        self.instances.append(self)
         self.setupUi(self)
+
+        # 先完成拉偏相关成员初始化，避免对象在初始化未完成时被外部调用。
+        self.deflectionTimer = QtCore.QTimer(self)
+        self.deflectionTimer.timeout.connect(self._deflection_step)
+        self.deflection_mode = None  # "Higher", "Lower", "Normal"
+        self.deflection_notice = True
+        self._deflection_fail_count = 0
 
         self.isConnected = False
         self.isOutput = False
@@ -99,43 +102,48 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
         self.sigInfo.connect(self.show_msg)
 
-        #初始化右侧绘图
-        da = {"电压": []}
-        self.volatge_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)  #动态画图 通道1
+        # 初始化右侧图表
+        da = {PLOT_VOLTAGE_KEY: []}
+        self.volatge_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)
         self.channel1.addWidget( self.volatge_layout)
 
 
-        da = {"电流": []}
-        self.current_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)  #动态画图 通道2
+        da = {PLOT_CURRENT_KEY: []}
+        self.current_layout = MyPlot(dataDict=da, dataLen=POINT_NUM)
         self.channel2.addWidget( self.current_layout)
 
         self.plot_thread = threading.Thread(target=self.plot_callback)
 
         Tool.port_check(self.portchoose)
 
-        # 统一的拉偏测试Timer和模式控制
-        self.deflectionTimer = QtCore.QTimer()
-        self.deflectionTimer.timeout.connect(self._deflection_step)
-        self.deflection_mode = None  # "Higher", "Lower", "Normal"
-        self.deflection_notice = True  # 是否弹窗提示
-        self._deflection_fail_count = 0
-
-        # 按钮连接到统一的拉偏测试接口
+        # 按钮连接到统一的拉偏测试入口
         self.Btn_to36.clicked.connect(lambda: self.start_deflection("Lower", notice=True))
         self.Btn_to45.clicked.connect(lambda: self.start_deflection("Higher", notice=True))
         self.Btn_back42.clicked.connect(lambda: self.start_deflection("Normal", notice=True))
         
         self.tcp_deflect.connect(self.start_deflection)
 
-        # TCP线程安全调用机制：确保串口操作在Qt主线程中执行
+        # TCP 线程安全调用机制：确保串口操作在 Qt 主线程中执行
         self._tcp_invoke_lock = threading.Lock()
         self._tcp_op_event = threading.Event()
         self._tcp_op_func = None
         self._tcp_op_result = None
         self._tcp_invoke_signal.connect(self._on_tcp_invoke)
+        self.instances.append(self)
+
+    def _ensure_deflection_timer(self):
+        if not hasattr(self, "deflectionTimer"):
+            self.deflectionTimer = QtCore.QTimer(self)
+            self.deflectionTimer.timeout.connect(self._deflection_step)
+        if not hasattr(self, "deflection_mode"):
+            self.deflection_mode = None
+        if not hasattr(self, "deflection_notice"):
+            self.deflection_notice = True
+        if not hasattr(self, "_deflection_fail_count"):
+            self._deflection_fail_count = 0
 
     def _on_tcp_invoke(self):
-        """槽函数：在Qt主线程中执行TCP请求的操作"""
+        """在 Qt 主线程中执行 TCP 请求对应的操作。"""
         if self._tcp_op_func:
             try:
                 self._tcp_op_result = self._tcp_op_func()
@@ -144,7 +152,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self._tcp_op_event.set()
 
     def _invoke_in_main_thread(self, func, timeout=30):
-        """从TCP子线程安全调用需要在主线程执行的函数，阻塞等待结果"""
+        """从 TCP 子线程安全调用需要在主线程执行的函数，并等待结果。"""
         with self._tcp_invoke_lock:
             self._tcp_op_event.clear()
             self._tcp_op_func = func
@@ -152,6 +160,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             if self._tcp_op_event.wait(timeout=timeout):
                 return self._tcp_op_result
             return [False, "Operation timed out"]
+
 
     def invoke_tcp_power_on(self):
         return self._invoke_in_main_thread(self.output_open_tcp)
@@ -161,6 +170,28 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
     def invoke_tcp_connect(self):
         return self._invoke_in_main_thread(self.port_open)
+
+    def invoke_tcp_set_voltage(self, channel, voltage):
+        return self._invoke_in_main_thread(lambda: self._tcp_set_voltage(channel, voltage))
+
+    def invoke_tcp_set_current(self, channel, current):
+        return self._invoke_in_main_thread(lambda: self._tcp_set_current(channel, current))
+
+    def _tcp_set_voltage(self, channel, voltage):
+        if channel != 1:
+            return [False, "PSW only supports channel 1"]
+        if not self.isConnected:
+            return [False, "Port not connected"]
+        self.V_set(voltage)
+        return [True, ""]
+
+    def _tcp_set_current(self, channel, current):
+        if channel != 1:
+            return [False, "PSW only supports channel 1"]
+        if not self.isConnected:
+            return [False, "Port not connected"]
+        self.I_set(current)
+        return [True, ""]
 
     def btn_Control(self, start_btn=None, stop_btn=None, start_listen=None, stop_listen=None, Btn_to36=None, Btn_to45=None, Btn_back42=None):
         if start_btn is not None:
@@ -180,11 +211,14 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
     def start_deflection(self, direction: str, notice: bool = True):
         """
-        统一的拉偏测试启动函数
-        :param direction: 拉偏方向 - "Higher"(向上到45V), "Lower"(向下到36V), "Normal"(回到42V)
+        统一的拉偏测试启动函数。
+
+        :param direction: 拉偏方向，"Higher"(向上到 45V)、"Lower"(向下到 36V)、"Normal"(回到 42V)
         :param notice: 是否在完成时弹窗提示
         :return: [成功标志, 消息]
         """
+        self._ensure_deflection_timer()
+
         if not self.isConnected:
             return [False, "Port not connected"]
         
@@ -196,7 +230,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.deflection_mode = direction
         self.deflection_notice = notice
         
-        # 禁用其他按钮，根据当前模式启用相应按钮
+        # 根据当前拉偏模式更新按钮状态和提示信息
         if direction == "Higher":
             self.btn_Control(Btn_to36=False, Btn_to45=True, Btn_back42=False)
             self.sigInfo.emit("开始向上拉偏到45V")
@@ -206,20 +240,20 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         elif direction == "Normal":
             self.btn_Control(Btn_to36=False, Btn_to45=False, Btn_back42=True)
             self.sigInfo.emit("开始回到默认42V")
-        
-        # 启动Timer
+
         self.deflectionTimer.start(1000)
         return [True, ""]
-    
+
     def stop_deflection(self):
-        """停止拉偏测试"""
+        """停止拉偏测试。"""
+        self._ensure_deflection_timer()
         self.deflectionTimer.stop()
         self.deflection_mode = None
         self._deflection_fail_count = 0
         self.btn_Control(Btn_to36=True, Btn_to45=True, Btn_back42=True)
-    
+
     def _deflection_step(self):
-        """拉偏测试的单步执行（Timer回调函数）"""
+        """Timer 回调：执行一次拉偏步进。"""
         try:
             if self.deflection_mode == "Lower":
                 self._deflect_to_36()
@@ -234,9 +268,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             if self._deflection_fail_count >= MAX_DEFLECTION_FAILURES:
                 self.sigInfo.emit("串口连续异常，已自动停止拉偏")
                 self.stop_deflection()
-    
+
     def _deflect_to_36(self):
-        """向下拉偏到36V"""
+        """向下拉偏到 36V。"""
         if math.isclose(self.CurrentV, 36, abs_tol=0.1) or self.CurrentV < 35.9:
             self.sigInfo.emit("已达到36V")
             self.deflectionTimer.stop()
@@ -245,9 +279,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
                 QMessageBox.information(self, "提示", "已达到36V")
             return
         self.V_set(round(self.CurrentV, 1) - 0.1)
-    
+
     def _deflect_to_45(self):
-        """向上拉偏到45V"""
+        """向上拉偏到 45V。"""
         if math.isclose(self.CurrentV, 45, abs_tol=0.1) or self.CurrentV > 45.1:
             self.sigInfo.emit("已达到45V")
             self.deflectionTimer.stop()
@@ -256,9 +290,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
                 QMessageBox.information(self, "提示", "已达到45V")
             return
         self.V_set(round(self.CurrentV, 1) + 0.1)
-    
+
     def _deflect_to_42(self):
-        """回到默认42V"""
+        """回到默认 42V。"""
         if math.isclose(self.CurrentV, 42, abs_tol=0.1) \
             or (self.CurrentV >= 41 and self.CurrentV <= 42 and (self.CurrentV + 0.1) > 42) \
             or (self.CurrentV <= 43 and self.CurrentV >= 42 and (self.CurrentV - 0.1) < 42):
@@ -272,13 +306,13 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.V_set((round(self.CurrentV, 1) - 0.1) if self.CurrentV > 42 else (round(self.CurrentV, 1) + 0.1))
 
 
+
+
     def findThread(self, name):
-        # print("开始监看")
         self.sigInfo.emit("开始监看")
         while self.findFlag:
             if Tool.check_window_contains_keyword(name):
                 self.sigInfo.emit("找到终端")
-                # print("找到终端")
                 self.found = True
                 self.findFlag = False
                 break
@@ -297,9 +331,10 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, stop_listen=False, Btn_to36=False, Btn_to45=False, Btn_back42=False)
             QMessageBox.information(self, "提示", f"已连接{self.portchoose.currentText()}")
 
-    def port_open(self):
+    def port_open(self, show_error=True):
         if self.isConnected:
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
+            Tool.update_config_option("Serial", "power_supply_long", self.portchoose.currentText())
             return [True, ""]
         try:
             self.psw.open(self.portchoose.currentText())
@@ -307,10 +342,23 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.powername.setText(f"{V}V")
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
             self.isConnected = True
+            Tool.update_config_option("Serial", "power_supply_long", self.portchoose.currentText())
             return [True, ""]
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"连接{self.portchoose.currentText()}失败，请检查端口是否正确！")
+            try:
+                if getattr(self.psw, "serial", None):
+                    self.psw.close()
+            except Exception:
+                pass
+            if show_error:
+                QMessageBox.warning(self, "错误", f"连接{self.portchoose.currentText()}失败，请检查端口是否正确！")
             return [False, ""]
+
+    def startup_port_open(self):
+        re = self.port_open(show_error=False)
+        if re[0]:
+            self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, stop_listen=False, Btn_to36=False, Btn_to45=False, Btn_back42=False)
+        return re
     
     def power_port_close(self):
         # 断开电源
@@ -339,21 +387,21 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         # 发送全部数据
         self.psw.setVoltage(float(self.CH1_V.text()))
         self.psw.setCurrent(float(self.CH1_I.text()))
-        self.sigInfo.emit(f"已发送全部数据")
+        self.sigInfo.emit("已发送全部数据")
 
     def V_get(self):
-        # 获取设置电压
+        # 获取设定电压
         V = self.psw.getVoltage()
         # self.VoutCol[ch].clear()
-        self.CH1_V_print.setText("电压："+str(V))
+        self.CH1_V_print.setText("电压：" + str(V))
         return V
     
 
     def I_get(self):
-        # 获取设置电流
+        # 获取设定电流
         I = self.psw.getCurrent()
         # self.IoutCol[ch].clear()
-        self.CH1_I_print.setText("电流："+str(I))
+        self.CH1_I_print.setText("电流：" + str(I))
         return I
     
 
@@ -362,7 +410,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         V,I = self.psw.getVoltage(), self.psw.getCurrent()
         self.CH1_V_print.setText("电压：%.3f" % V)
         self.CH1_I_print.setText("电流：%.3f" % I)
-        self.sigInfo.emit(f"已检查全部数据")
+        self.sigInfo.emit("已检查全部数据")
         return [["%.3f"%V, "%.3f"%I]]
 
     
@@ -382,11 +430,11 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.start_plot()
             time.sleep(1)
             self.psw.enableOutput()
-            self.sigInfo.emit(f"已打开电源输出")
+            self.sigInfo.emit("已打开电源输出")
             self.isOutput = True
             self.btn_Control(start_btn=False, stop_btn=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
         else:
-            self.sigInfo.emit(f"请先连接电源")
+            self.sigInfo.emit("请先连接电源")
             return
     
     
@@ -406,21 +454,21 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.start_plot()
             time.sleep(1)
             self.psw.enableOutput()
-            self.sigInfo.emit(f"已打开电源输出")
+            self.sigInfo.emit("已打开电源输出")
             self.isOutput = True
             self.btn_Control(start_btn=False, stop_btn=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
             return [True, ""]
         else:
-            self.sigInfo.emit(f"请先连接电源")
+            self.sigInfo.emit("请先连接电源")
             return [False, "Port not connected"]
 
     def output_close(self):
         # 关闭输出
         if self.found:
             self.found = False
-            self.dataUpSignal.emit(f"./电源采集数据/{self.name}_{self.start_time}.csv")
+            self.dataUpSignal.emit(os.path.join(DATA_DIR, f"{self.name}_{self.start_time}.csv"))
         self.psw.enableOutput(False)
-        self.sigInfo.emit(f"已关闭电源输出")
+        self.sigInfo.emit("已关闭电源输出")
         self.isOutput = False
         time.sleep(1)
         if self.plot_thread.is_alive():
@@ -433,9 +481,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         # 关闭输出
         # if self.found:
         #     self.found = False  
-        #     self.dataUpSignal.emit(f"./电源采集数据/{self.name}_{self.start_time}.csv")
+        #     self.dataUpSignal.emit(os.path.join(DATA_DIR, f"{self.name}_{self.start_time}.csv"))
         self.psw.enableOutput(False)
-        self.sigInfo.emit(f"已关闭电源输出")
+        self.sigInfo.emit("已关闭电源输出")
         self.isOutput = False
         time.sleep(1)
         if self.plot_thread.is_alive():
@@ -447,8 +495,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
     def downDeflection_tcp(self, Con, notice: bool = False):
         """
-        TCP远程控制拉偏测试接口
-        :param Con: 拉偏方向 - "Higher"(向上到45V), "Lower"(向下到36V), "Normal"(回到42V)
+        TCP 远程控制拉偏测试接口。
+
+        :param Con: 拉偏方向，"Higher"(向上到 45V)、"Lower"(向下到 36V)、"Normal"(回到 42V)
         :param notice: 是否在完成时弹窗提示，远程控制默认不弹窗
         :return: [成功标志, 消息]
         """
@@ -456,15 +505,15 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
 
     def plot_callback(self):
-        CH1_V = {"电压": 0}
-        CH1_I = {"电流": 0}
+        CH1_V = {PLOT_VOLTAGE_KEY: 0}
+        CH1_I = {PLOT_CURRENT_KEY: 0}
         fail_count = 0
         while not self.StopFlag:
             try:
                 V, I = self.psw.getOutput()
                 fail_count = 0
-                CH1_V["电压"] = V
-                CH1_I["电流"] = I
+                CH1_V[PLOT_VOLTAGE_KEY] = V
+                CH1_I[PLOT_CURRENT_KEY] = I
                 self.CurrentV = V
                 self.CurrentI = I
                 if I > self.safty:
@@ -472,13 +521,16 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
                     self.current_warn.emit(f"{self.name}", f"CH1", f"{I}")
                 self.volatge_signal.emit(CH1_V)
                 self.current_signal.emit(CH1_I)
-                if not os.path.exists(f"./电源采集数据/"):
-                    os.mkdir(f"./电源采集数据/")
-                if not os.path.exists(f"./电源采集数据/{self.name}_{self.start_time}.csv"):
-                    with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "w", encoding='gbk') as f:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                csv_path = os.path.join(DATA_DIR, f"{self.name}_{self.start_time}.csv")
+                if not os.path.exists(csv_path):
+                    with open(csv_path, "w", encoding="gbk") as f:
                         f.write("时间,CH1电压,CH1电流\n")
-                with open(f"./电源采集数据/{self.name}_{self.start_time}.csv", "a", encoding='gbk') as f:
-                    f.write(f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},{CH1_V['电压']},{CH1_I['电流']}\n")
+                with open(csv_path, "a", encoding="gbk") as f:
+                    f.write(
+                        f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')[:-3]},"
+                        f"{CH1_V[PLOT_VOLTAGE_KEY]},{CH1_I[PLOT_CURRENT_KEY]}\n"
+                    )
                 time.sleep(0.1)
             except Exception as e:
                 fail_count += 1
@@ -499,9 +551,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3]
             self.plot_thread = threading.Thread(target=self.plot_callback)
             self.plot_thread.start()
-            self.sigInfo.emit(f"已开启采集")
+            self.sigInfo.emit("已开启采集")
         else:
-            self.sigInfo.emit(f"采集已开启")
+            self.sigInfo.emit("采集已开启")
         self.btn_Control(start_listen=False, stop_listen=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
 
     def close_plot(self):
@@ -509,9 +561,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.StopFlag = True
         if self.plot_thread.is_alive():
             self.plot_thread.join()
-            self.sigInfo.emit(f"已关闭采集")
+            self.sigInfo.emit("已关闭采集")
         else:
-            self.sigInfo.emit(f"采集已关闭")
+            self.sigInfo.emit("采集已关闭")
         self.btn_Control(start_listen=True, stop_listen=False, Btn_to36=False, Btn_to45=False, Btn_back42=False)
 
 
@@ -524,4 +576,5 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         return cls.instances
     
     def __del__(self):
-        self.instances.remove(self)
+        if self in self.instances:
+            self.instances.remove(self)
