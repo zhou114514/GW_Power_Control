@@ -26,7 +26,7 @@
   - 数据保存路径：`./电源采集数据/`
 
 ### 高级功能
-- **TCP 服务器**：支持远程控制和数据交互
+- **TCP 服务器**：内置 JSON over TCP 服务器（默认端口 10002），支持远程控制所有电源设备
 - **电压拉偏测试**：
   - 36V → 45V → 42V 自动测试
   - 精度：0.1V 步进
@@ -78,12 +78,11 @@ python gxtdy.py
 
 ### Auto_config.ini 配置文件
 
-#### TCP 配置
+#### TCP 服务器配置
 ```ini
-[TCP]
-ip = 127.0.0.1          # TCP服务器IP地址
-port = 4070             # TCP服务器端口
-auto_connect = True     # 是否自动连接
+[TCPServer]
+host = 127.0.0.1        # TCP服务器监听地址（0.0.0.0 表示监听所有网卡）
+port = 10002            # TCP服务器监听端口（默认 10002）
 ```
 
 #### 串口配置
@@ -170,6 +169,216 @@ request_timeout = 3             # 检测超时时间（秒）
 2. 发送性能测试前后指令前，请检查数据采集是否停止，否则电源返回的信息会出错，导致软件报错，不能保存
 3. 请根据实际设备配置合理的电流/电压限制值，避免设备损坏
 
+### TCP 远程控制协议
+
+程序启动后会自动在后台开启 TCP 服务器（默认监听 `127.0.0.1:10002`）。客户端通过发送 **JSON + 换行符（`\n`）** 的文本帧进行通信，服务器以相同格式回复。
+
+#### 请求格式
+
+```json
+{"opcode": "<命令名>", "parameter": {<参数对象>}}
+```
+
+#### 响应格式
+
+```json
+{"IsSuccessful": true, "Value": <返回值>, "ErrorMessage": "Null"}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `IsSuccessful` | bool | 命令是否执行成功 |
+| `Value` | any / `"Null"` | 成功时的返回数据 |
+| `ErrorMessage` | string / `"Null"` | 失败时的错误描述 |
+
+---
+
+#### 设备定位参数（通用）
+
+多数命令的 `parameter` 中可包含以下字段以定位目标设备：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `DeviceType` | string | 否 | 设备类型：`"PSW"`（长条，默认）、`"GPD"`（方形）、`"GPP"`（三通道）、`"MU_N"`（多通道） |
+| `DeviceName` | string | 否 | 设备名称，优先于索引匹配 |
+| `DeviceIndex` | int | 否 | 同类型设备的索引（从 0 开始，默认 0） |
+
+---
+
+#### 命令列表
+
+##### `check` — 心跳检测 / 获取版本
+
+- **参数**：无
+- **返回 Value**：当前软件版本字符串
+
+```json
+// 请求
+{"opcode": "check", "parameter": {}}
+
+// 响应示例
+{"IsSuccessful": true, "Value": "1.1.5", "ErrorMessage": "Null"}
+```
+
+---
+
+##### `ListDevices` — 列出所有设备
+
+- **参数**：无
+- **返回 Value**：按设备类型分组的设备列表，每个设备包含 `Index`、`Name`、`Connected` 字段；MU_N 类型额外包含 `Channels` 字段
+
+```json
+// 请求
+{"opcode": "ListDevices", "parameter": {}}
+
+// 响应示例
+{
+  "IsSuccessful": true,
+  "Value": {
+    "PSW":  [{"Index": 0, "Name": "长条电源", "Connected": true}],
+    "GPD":  [{"Index": 0, "Name": "方形电源1", "Connected": false}],
+    "GPP":  [{"Index": 0, "Name": "GPP电源",  "Connected": true}],
+    "MU_N": [{"Index": 0, "Name": "MU_N电源", "Connected": true, "Channels": 3}]
+  },
+  "ErrorMessage": "Null"
+}
+```
+
+---
+
+##### `ConnectDevice` — 连接设备串口/VISA
+
+- **参数**：设备定位参数
+
+```json
+// 请求
+{"opcode": "ConnectDevice", "parameter": {"DeviceType": "PSW", "DeviceIndex": 0}}
+```
+
+---
+
+##### `PowerON` — 开启电源输出
+
+- **参数**：设备定位参数
+
+```json
+{"opcode": "PowerON", "parameter": {"DeviceType": "PSW", "DeviceIndex": 0}}
+```
+
+---
+
+##### `PowerOFF` — 关闭电源输出
+
+- **参数**：设备定位参数
+
+```json
+{"opcode": "PowerOFF", "parameter": {"DeviceType": "PSW", "DeviceIndex": 0}}
+```
+
+---
+
+##### `CurrentValue` — 读取当前电压/电流
+
+- **参数**：设备定位参数
+- **返回 Value**（PSW 单通道）：
+
+```json
+{"Voltage": 42.0, "Current": 3.5}
+```
+
+- **返回 Value**（GPD / GPP / MU_N 多通道）：
+
+```json
+{"CH1": {"Voltage": 5.0, "Current": 1.0}, "CH2": {"Voltage": 12.0, "Current": 0.5}}
+```
+
+```json
+// 请求示例
+{"opcode": "CurrentValue", "parameter": {"DeviceType": "GPP", "DeviceIndex": 0}}
+```
+
+---
+
+##### `SetVoltage` — 设置电压
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `Channel` | int | 是 | 通道号（PSW 填 1） |
+| `Voltage` | float | 是 | 目标电压（V） |
+| 设备定位参数 | — | 否 | 见上表 |
+
+```json
+// 设置 GPP 电源 CH1 为 42V
+{"opcode": "SetVoltage", "parameter": {"DeviceType": "GPP", "DeviceIndex": 0, "Channel": 1, "Voltage": 42.0}}
+```
+
+---
+
+##### `SetCurrent` — 设置电流
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `Channel` | int | 是 | 通道号 |
+| `Current` | float | 是 | 目标电流（A） |
+| 设备定位参数 | — | 否 | 见上表 |
+
+```json
+// 设置长条电源 CH1 为 3.5A
+{"opcode": "SetCurrent", "parameter": {"DeviceType": "PSW", "DeviceIndex": 0, "Channel": 1, "Current": 3.5}}
+```
+
+---
+
+##### `DownDeflection` — 触发电压拉偏测试（仅 PSW）
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `Con` | any | 是 | 拉偏控制参数（传递给拉偏信号） |
+| 设备定位参数 | — | 否 | 见上表 |
+
+```json
+{"opcode": "DownDeflection", "parameter": {"DeviceType": "PSW", "DeviceIndex": 0, "Con": 36}}
+```
+
+---
+
+#### 完整交互示例（Python）
+
+```python
+import socket
+import json
+
+def send_cmd(sock, opcode, params=None):
+    cmd = {"opcode": opcode, "parameter": params or {}}
+    sock.sendall((json.dumps(cmd) + "\n").encode("utf-8"))
+    resp = b""
+    while b"\n" not in resp:
+        resp += sock.recv(1024)
+    return json.loads(resp.split(b"\n")[0])
+
+with socket.create_connection(("127.0.0.1", 10002)) as s:
+    # 1. 心跳检测
+    print(send_cmd(s, "check"))
+
+    # 2. 列出设备
+    print(send_cmd(s, "ListDevices"))
+
+    # 3. 开启长条电源输出
+    print(send_cmd(s, "PowerON", {"DeviceType": "PSW", "DeviceIndex": 0}))
+
+    # 4. 设置电压 42V、电流 3.5A
+    print(send_cmd(s, "SetVoltage", {"DeviceType": "PSW", "Channel": 1, "Voltage": 42.0}))
+    print(send_cmd(s, "SetCurrent", {"DeviceType": "PSW", "Channel": 1, "Current": 3.5}))
+
+    # 5. 读取实时值
+    print(send_cmd(s, "CurrentValue", {"DeviceType": "PSW"}))
+
+    # 6. 关闭输出
+    print(send_cmd(s, "PowerOFF", {"DeviceType": "PSW"}))
+```
+
+---
+
 ### 电压拉偏测试
 
 长条电源支持自动电压拉偏功能：
@@ -177,7 +386,7 @@ request_timeout = 3             # 检测超时时间（秒）
 - **升至45V**：从当前电压自动升至45V
 - **回到42V**：从当前电压自动恢复到42V
 - 步进精度：0.1V/秒
-- 支持通过 TCP 远程触发拉偏测试
+- 支持通过 TCP 远程触发（`DownDeflection` 命令，仅 PSW 设备）
 
 ### MU_N 电源通道管理
 
@@ -337,6 +546,7 @@ power.add_channel()             # 动态增加通道
 - **V1.1.1**：优化了远程控制，增加了拉偏测试的远程控制
 - **V1.1.2**：通过增强的错误处理和 TCP 线程安全性提升偏转测试与数据采集性能
 - **V1.1.5**：新增 GPP 三通道电源和 MU_N 多通道电源支持；新增声音报警、操作日志、版本管理与自动更新检测功能
+- **V1.2.0**：重构远程控制模块，引入全新 JSON over TCP 服务器（`TCPServer.py`），支持完整的设备管理、电压/电流设置、开关机及拉偏测试远程控制，默认监听端口 10002
 
 ## 🤝 贡献
 

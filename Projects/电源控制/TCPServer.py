@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QApplication
 from .GPP电源控制 import GPPPower
 from .MU_N电源控制 import MUNPower
 from .长条电源控制 import LongPower
+from .方形电源控制 import SquarePower
 from .version_control import get_current_version
 
 
@@ -15,6 +16,7 @@ VERSION = get_current_version()
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 10002
 DEVICE_TYPE_PSW = "PSW"
+DEVICE_TYPE_GPD = "GPD"
 DEVICE_TYPE_GPP = "GPP"
 DEVICE_TYPE_MU_N = "MU_N"
 
@@ -106,6 +108,8 @@ class TCPServer(QThread):
         normalized = str(device_type or DEVICE_TYPE_PSW).upper()
         if normalized == DEVICE_TYPE_PSW:
             return LongPower.get_instances()
+        if normalized == DEVICE_TYPE_GPD:
+            return SquarePower.get_instances()
         if normalized == DEVICE_TYPE_GPP:
             return GPPPower.get_instances()
         if normalized == DEVICE_TYPE_MU_N:
@@ -158,7 +162,7 @@ class TCPServer(QThread):
     def _current_value(self, params):
         device_type, device = self._resolve_device(params)
 
-        if device_type in (DEVICE_TYPE_GPP, DEVICE_TYPE_MU_N):
+        if device_type in (DEVICE_TYPE_GPD, DEVICE_TYPE_GPP, DEVICE_TYPE_MU_N):
             result = device.invoke_tcp_get_value()
             if not result[0]:
                 return self.make_backpack(False, None, result[1] if len(result) > 1 else None)
@@ -211,6 +215,10 @@ class TCPServer(QThread):
             DEVICE_TYPE_PSW: [
                 {"Index": index, "Name": device.name, "Connected": device.isConnected}
                 for index, device in enumerate(LongPower.get_instances())
+            ],
+            DEVICE_TYPE_GPD: [
+                {"Index": index, "Name": device.name, "Connected": device.isConnected}
+                for index, device in enumerate(SquarePower.get_instances())
             ],
             DEVICE_TYPE_GPP: [
                 {"Index": index, "Name": device.name, "Connected": device.isConnected}

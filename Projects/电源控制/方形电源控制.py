@@ -44,6 +44,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     channel1_signal = pyqtSignal(dict)
     channel2_signal = pyqtSignal(dict)
     dataUpSignal = pyqtSignal(str)
+    _tcp_invoke_signal = pyqtSignal()
 
     def __init__(self, name):
         super(SquarePower,self).__init__()
@@ -92,6 +93,13 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.channel2_signal.connect(lambda x: self.channel2_layout.updateData(x))
 
         self.sigInfo.connect(self.show_msg)
+
+        # TCP 线程安全调用机制：确保串口操作在 Qt 主线程中执行
+        self._tcp_invoke_lock = threading.Lock()
+        self._tcp_op_event = threading.Event()
+        self._tcp_op_func = None
+        self._tcp_op_result = None
+        self._tcp_invoke_signal.connect(self._on_tcp_invoke)
 
         # 初始化右侧图表
         da = {PLOT_VOLTAGE_KEY: [], PLOT_CURRENT_KEY: []}
@@ -309,7 +317,90 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
 
     def checkplot(self):
         return self.plot_thread.is_alive()
-        
+
+    # ------------------------------------------------------------------ #
+    #  TCP 远程控制支持                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _on_tcp_invoke(self):
+        """在 Qt 主线程中执行 TCP 请求对应的操作。"""
+        if self._tcp_op_func:
+            try:
+                self._tcp_op_result = self._tcp_op_func()
+            except Exception as e:
+                self._tcp_op_result = [False, str(e)]
+            self._tcp_op_event.set()
+
+    def _invoke_in_main_thread(self, func, timeout=30):
+        """从 TCP 子线程安全调用需要在主线程执行的函数，并等待结果。"""
+        with self._tcp_invoke_lock:
+            self._tcp_op_event.clear()
+            self._tcp_op_func = func
+            self._tcp_invoke_signal.emit()
+            if self._tcp_op_event.wait(timeout=timeout):
+                return self._tcp_op_result
+            return [False, "Operation timed out"]
+
+    def output_open_tcp(self):
+        """TCP 远程打开输出，不弹出 UI 对话框。"""
+        if not self.isConnected:
+            return [False, "Port not connected"]
+        self.GPD.enableOutput()
+        self.sigInfo.emit("已打开电源输出")
+        self.isOutput = True
+        self.start_plot()
+        return [True, ""]
+
+    def output_close_tcp(self):
+        """TCP 远程关闭输出，不阻塞主线程（采集线程会在下次循环中自行停止）。"""
+        self.GPD.enableOutput(False)
+        self.sigInfo.emit("已关闭电源输出")
+        self.isOutput = False
+        self.StopFlag = True
+
+    def _tcp_set_voltage(self, channel, voltage):
+        if not self.isConnected:
+            return [False, "Device not connected"]
+        if channel not in (1, 2):
+            return [False, "GPD only supports channel 1 or 2"]
+        self.V_set(channel, voltage)
+        return [True, ""]
+
+    def _tcp_set_current(self, channel, current):
+        if not self.isConnected:
+            return [False, "Device not connected"]
+        if channel not in (1, 2):
+            return [False, "GPD only supports channel 1 or 2"]
+        self.I_set(channel, current)
+        return [True, ""]
+
+    def _tcp_get_value(self):
+        if not self.isConnected:
+            return [False, "Device not connected"]
+        snapshot = {}
+        for ch in (1, 2):
+            voltage = self.GPD.getVoltageOutput(ch)
+            current = self.GPD.getCurrentOutput(ch)
+            snapshot[ch] = [voltage, current]
+        return [True, snapshot]
+
+    def invoke_tcp_connect(self):
+        return self._invoke_in_main_thread(self.port_open)
+
+    def invoke_tcp_power_on(self):
+        return self._invoke_in_main_thread(self.output_open_tcp)
+
+    def invoke_tcp_power_off(self):
+        return self._invoke_in_main_thread(self.output_close_tcp)
+
+    def invoke_tcp_set_voltage(self, channel, voltage):
+        return self._invoke_in_main_thread(lambda: self._tcp_set_voltage(channel, voltage))
+
+    def invoke_tcp_set_current(self, channel, current):
+        return self._invoke_in_main_thread(lambda: self._tcp_set_current(channel, current))
+
+    def invoke_tcp_get_value(self):
+        return self._invoke_in_main_thread(self._tcp_get_value)
 
     @classmethod
     def get_instances(cls):
