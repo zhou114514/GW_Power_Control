@@ -13,6 +13,7 @@ import datetime
 import json
 
 from .长条电源控制 import LongPower
+from .tool import Tool
 
 # log_path = "C:\\Logs\\starer_sever"
 
@@ -22,12 +23,20 @@ VERSION = "Unknown" if pd.read_csv("./更新内容.csv", header=None, index_col=
 class TCPServer(QThread):
     """TCP服务器"""
 
-    def __init__(self, host='127.0.0.1', port=10002):
+    def __init__(self, host='127.0.0.1', port=10002, auto_connect=True):
         super(TCPServer, self).__init__()
-        # 本机IP地址
         self.host = host
         self.port = int(port)
-        self.LongPower: dict[str, LongPower] = LongPower.get_instances()
+        self.auto_connect = auto_connect
+
+    @classmethod
+    def from_config(cls):
+        """从 Auto_config.ini [TCP] 读取监听地址、端口与是否自动启动"""
+        cfg = Tool.read_config("TCP")
+        host = cfg.get("ip", "127.0.0.1")
+        port = int(cfg.get("port", "4070"))
+        auto_connect = cfg.get("auto_connect", "True").strip().lower() == "true"
+        return cls(host=host, port=port, auto_connect=auto_connect)
 
     def handle_client_connection(self, client_socket):
         """处理客户端连接"""
@@ -116,39 +125,70 @@ class TCPServer(QThread):
 
     def _check_device_available(self):
         """检查设备是否可用"""
-        return len(self.LongPower) > 0
+        return len(LongPower.get_instances()) > 0
+
+    def _resolve_power(self, params):
+        """根据远程协议中的 device 参数（配置 id）定位长条电源实例"""
+        params = params or {}
+        device_key = params.get("device") or params.get("Device")
+        if device_key is not None:
+            power = LongPower.get_by_device_id(str(device_key))
+            if power is None:
+                return None, f"Device not found: {device_key}"
+            if not power.remote_enabled:
+                return None, f"Device remote control disabled: {device_key}"
+            return power, None
+
+        power = LongPower.get_default_remote()
+        if power is None:
+            return None, "No power control board available"
+        return power, None
     
     def _handle_power_on(self, params):
         """处理开机命令"""
-        result = self.LongPower[0].invoke_tcp_power_on()
+        power, err = self._resolve_power(params)
+        if err:
+            return self.make_backpack(False, None, err)
+        result = power.invoke_tcp_power_on()
         return self.make_backpack(result[0], None, result[1])
     
     def _handle_power_off(self, params):
         """处理关机命令"""
-        result = self.LongPower[0].invoke_tcp_power_off()
+        power, err = self._resolve_power(params)
+        if err:
+            return self.make_backpack(False, None, err)
+        result = power.invoke_tcp_power_off()
         return self.make_backpack(result[0], None, result[1])
     
     def _handle_current_value(self, params):
         """处理获取电流电压命令"""
-        voltage, current = self.LongPower[0].get_value()
+        power, err = self._resolve_power(params)
+        if err:
+            return self.make_backpack(False, None, err)
+        voltage, current = power.get_value()
         return self.make_backpack(True, {"Voltage": voltage, "Current": current}, None)
     
     def _handle_down_deflection(self, params):
         """处理下偏转命令"""
         if not params or "Con" not in params:
             return self.make_backpack(False, None, "Missing parameter: Con")
-        
-        if not self.LongPower[0].isConnected:
+        power, err = self._resolve_power(params)
+        if err:
+            return self.make_backpack(False, None, err)
+        if not power.isConnected:
             return self.make_backpack(False, None, "Serial port not connected")
         
         deflection_type = params["Con"]
         
-        self.LongPower[0].tcp_deflect.emit(deflection_type, False)
+        power.tcp_deflect.emit(deflection_type, False)
         return self.make_backpack(True, None, None)
     
     def _handle_connect_device(self, params):
         """处理连接设备命令"""
-        result = self.LongPower[0].invoke_tcp_connect()
+        power, err = self._resolve_power(params)
+        if err:
+            return self.make_backpack(False, None, err)
+        result = power.invoke_tcp_connect()
         return self.make_backpack(result[0], None, result[1])
     
     def _handle_check(self, params):
@@ -217,6 +257,7 @@ class TCPServer(QThread):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    server = TCPServer()
-    server.start()
+    server = TCPServer.from_config()
+    if server.auto_connect:
+        server.start()
     sys.exit(app.exec_())

@@ -1,7 +1,7 @@
 from PyQt5.QtCore import pyqtSignal
 import serial
 import serial.tools.list_ports
-import time,os,sys
+import time,os,sys,json,copy
 import configparser
 
 from PyQt5 import QtWidgets, QtCore
@@ -24,6 +24,29 @@ if getattr(sys, 'frozen', False):
     root_path = os.path.dirname(os.path.abspath(sys.executable))
 else:
     root_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+
+POWER_CONFIG_PATH = os.path.join(root_path, "power_config.json")
+
+DEFAULT_POWER_CONFIG = {
+    "serial": {
+        "auto_connect": False,
+        "auto_output": False,
+    },
+    "devices": [
+        {
+            "id": "long1",
+            "name": "长条电源",
+            "type": "long",
+            "port": "COM",
+            "default_voltage": 42,
+            "default_current": 3.5,
+            "current_limit": 100,
+            "remote": True,
+        }
+    ],
+}
+
+_power_device_registry = {}
 
 class Tool():
 
@@ -74,32 +97,79 @@ class Tool():
             config.set("TCP", "ip", "127.0.0.1")
             config.set("TCP", "port", "4070")
             config.set("TCP", "auto_connect", "True")
-            config.add_section("Serial")
-            config.set("Serial", "power_supply_square1", "COM")
-            config.set("Serial", "power_supply_square2", "COM")
-            config.set("Serial", "power_supply_square3", "COM")
-            config.set("Serial", "power_supply_square4", "COM")
-            config.set("Serial", "power_supply_long", "COM")
-            config.set("Serial", "auto_connect", "False")
-            config.set("Serial", "auto_output", "False")
             config.add_section("Additional")
             config.set("Additional", "power_add", "False")
             config.set("Additional", "power_del", "False")
-            config.add_section("Safty")
-            config.set("Safty", "current_limit1_ch1", "100")
-            config.set("Safty", "current_limit1_ch2", "100")
-            config.set("Safty", "current_limit2_ch1", "100")
-            config.set("Safty", "current_limit2_ch2", "100")
-            config.set("Safty", "current_limit3_ch1", "100")
-            config.set("Safty", "current_limit3_ch2", "100")
-            config.set("Safty", "current_limit4_ch1", "100")
-            config.set("Safty", "current_limit4_ch2", "100")
-            config.set("Safty", "current_limit5_ch1", "100")
             with open(config_path, "w", encoding="utf-8") as f:
                 config.write(f)
+        Tool.check_power_config()
+        return os.path.exists(config_path)
+
+    def check_power_config():
+        """检测电源 JSON 配置文件，不存在则创建默认配置"""
+        if not os.path.exists(POWER_CONFIG_PATH):
+            default = copy.deepcopy(DEFAULT_POWER_CONFIG)
+            default["scenario"] = "gxt_only"
+            with open(POWER_CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(default, f, ensure_ascii=False, indent=2)
             return False
+        return True
+
+    def read_power_config_raw():
+        """读取电源 JSON 原始配置（含 scenario 字段）"""
+        Tool.check_power_config()
+        with open(POWER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def save_power_config(cfg):
+        """保存电源 JSON 配置"""
+        with open(POWER_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    def need_power_scenario_setup():
+        """是否尚未选择使用场景（首次启动需弹出设置）"""
+        cfg = Tool.read_power_config_raw()
+        return not cfg.get("scenario")
+
+    def register_power_device(device_id, instance):
+        if device_id:
+            _power_device_registry[str(device_id)] = instance
+
+    def unregister_power_device(device_id):
+        _power_device_registry.pop(str(device_id), None)
+
+    def get_power_device(device_id):
+        return _power_device_registry.get(str(device_id))
+
+    def _normalize_device(dev):
+        power_type = dev.get("type", "long")
+        normalized = {
+            "id": str(dev["id"]),
+            "name": dev.get("name", str(dev["id"])),
+            "type": power_type,
+            "port": dev.get("port", "COM1"),
+            "remote": bool(dev.get("remote", power_type == "long")),
+        }
+        if power_type == "long":
+            normalized["default_voltage"] = float(dev.get("default_voltage", 42))
+            normalized["default_current"] = float(dev.get("default_current", 3.5))
+            normalized["current_limit"] = float(dev.get("current_limit", 100))
+        elif power_type == "square":
+            ch1 = dev.get("ch1", {})
+            ch2 = dev.get("ch2", {})
+            normalized["ch1"] = {
+                "voltage": float(ch1.get("voltage", 5)),
+                "current": float(ch1.get("current", 1)),
+            }
+            normalized["ch2"] = {
+                "voltage": float(ch2.get("voltage", 12)),
+                "current": float(ch2.get("current", 0.5)),
+            }
+            normalized["current_limit_ch1"] = float(dev.get("current_limit_ch1", 100))
+            normalized["current_limit_ch2"] = float(dev.get("current_limit_ch2", 100))
         else:
-            return True
+            raise ValueError(f"未知电源类型: {power_type}")
+        return normalized
         
     def read_config(get_key):
         # 读取配置文件
@@ -107,6 +177,30 @@ class Tool():
         config = configparser.ConfigParser()
         config.read(config_path)
         return dict(config.items(get_key))
+
+    def read_power_config():
+        """读取电源 JSON 配置（每台电源的类型、限压限流、远程索引 id）"""
+        cfg = Tool.read_power_config_raw()
+        serial_cfg = cfg.get("serial", {})
+        devices = []
+        seen_ids = set()
+        for dev in cfg.get("devices", []):
+            if "id" not in dev:
+                raise ValueError("电源配置缺少 id 字段")
+            normalized = Tool._normalize_device(dev)
+            if normalized["id"] in seen_ids:
+                raise ValueError(f"重复的电源 id: {normalized['id']}")
+            seen_ids.add(normalized["id"])
+            devices.append(normalized)
+        if not devices:
+            raise ValueError("电源配置 devices 列表不能为空")
+        return {
+            "serial": {
+                "auto_connect": bool(serial_cfg.get("auto_connect", False)),
+                "auto_output": bool(serial_cfg.get("auto_output", False)),
+            },
+            "devices": devices,
+        }
     
     def init_execl_list():
         # 获取execl文件列表

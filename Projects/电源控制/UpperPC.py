@@ -14,11 +14,12 @@ from Utility.MainWindow.MainWindow import Ui_MainWindow
 
 from .方形电源控制 import SquarePower
 from .长条电源控制 import LongPower
-# from .TCP import TCP
 from .TCPServer import TCPServer
+from .power_settings import PowerSettingsDialog
 from .tool import *
 from .FTP import FTPClient
 import json
+import sys
 
 VERSION = "Unknown" if not os.path.exists("更新内容.csv") or \
     pd.read_csv("更新内容.csv", header=None, index_col=None).iloc[-1, 0] is None \
@@ -47,62 +48,86 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         #删除所有左侧按钮
         self.leftlayout = QGridLayout()
 
+        self.settings_btn = QtWidgets.QPushButton("电源设置")
+        self.settings_btn.setStyleSheet("font: 12pt \"微软雅黑\";")
+        self.settings_btn.clicked.connect(self.show_power_settings)
+        self.leftlayout.addWidget(self.settings_btn, 0, 0)
+        self.frame_left.setLayout(self.leftlayout)
+
         cfg = Tool.read_config("Additional")
         if cfg["power_add"] == "True":
             self.addBTN()
         if cfg["power_del"] == "True":
             self.delBTN()
 
-        self.power_control_obj5 = LongPower("长条电源")
-        self.power_control_obj5.current_warn.connect(self.CurrentWarning)
-        self.power_control_obj5.start_signal.connect(self.start_info)
-        self.AddSubWin(self.power_control_obj5)
-        self.power_control_obj5.dataUpSignal.connect(self.update_data)
+        power_cfg = Tool.read_power_config()
+        self.power_objs = []
 
-        self.power_control_obj1 = SquarePower("方形电源1")
-        self.power_control_obj1.current_warn.connect(self.CurrentWarning)
-        self.AddSubWin(self.power_control_obj1)
-
-        self.power_control_obj2 = SquarePower("方形电源2")
-        self.power_control_obj2.current_warn.connect(self.CurrentWarning)
-        self.AddSubWin(self.power_control_obj2)
-
-        subwin_obj = SquarePower.get_instances()
-
-        # self.tcp = TCP("TCP")
-
-        server = TCPServer()
-        server.start()
-        
-
-        cfg = Tool.read_config("Serial")
-        for i in range(len(subwin_obj)):
-            if Tool.check_incombox(subwin_obj[i].portchoose, cfg[f"power_supply_square{i+1}"]):
-                subwin_obj[i].portchoose.setCurrentText(cfg[f"power_supply_square{i+1}"])
+        for dev in power_cfg["devices"]:
+            if dev["type"] == "long":
+                obj = LongPower(
+                    dev["name"],
+                    default_voltage=dev["default_voltage"],
+                    default_current=dev["default_current"],
+                    device_id=dev["id"],
+                    remote_enabled=dev["remote"],
+                )
+                obj.safty = dev["current_limit"]
+                obj.current_warn.connect(self.CurrentWarning)
+                obj.start_signal.connect(self.start_info)
+                obj.dataUpSignal.connect(self.update_data)
+            elif dev["type"] == "square":
+                obj = SquarePower(
+                    dev["name"],
+                    device_id=dev["id"],
+                    ch1_voltage=dev["ch1"]["voltage"],
+                    ch1_current=dev["ch1"]["current"],
+                    ch2_voltage=dev["ch2"]["voltage"],
+                    ch2_current=dev["ch2"]["current"],
+                )
+                obj.ch1_safty = dev["current_limit_ch1"]
+                obj.ch2_safty = dev["current_limit_ch2"]
+                obj.current_warn.connect(self.CurrentWarning)
             else:
-                subwin_obj[i].portchoose.setCurrentText("COM1")
-                print("未找到串口配置，使用默认配置")
-        if Tool.check_incombox(self.power_control_obj5.portchoose, cfg["power_supply_long"]):
-            self.power_control_obj5.portchoose.setCurrentText(cfg["power_supply_long"])
+                print(f"跳过未知电源类型: {dev['type']}")
+                continue
+
+            self.AddSubWin(obj)
+            self.power_objs.append(obj)
+            if Tool.check_incombox(obj.portchoose, dev["port"]):
+                obj.portchoose.setCurrentText(dev["port"])
+            else:
+                obj.portchoose.setCurrentText("COM1")
+                print(f"未找到串口 {dev['port']}（{dev['id']}），使用默认 COM1")
+            print(f"电源 [{dev['id']}] {dev['name']} 已加载，类型={dev['type']}")
+
+        tcp_server = TCPServer.from_config()
+        if tcp_server.auto_connect:
+            tcp_server.start()
         else:
-            self.power_control_obj5.portchoose.setCurrentText("COM1")
-            print("未找到串口配置，使用默认配置")
-        if cfg["auto_connect"] == "True":
-            for i in range(len(subwin_obj)):
-                subwin_obj[i].portopen.click()
-            self.power_control_obj5.portopen.click()
-        if cfg["auto_output"] == "True":
-            for i in range(len(subwin_obj)):
-                subwin_obj[i].start_btn.click()
-            self.power_control_obj5.start_btn.click()
-        cfg = Tool.read_config("Safty")
-        for i in range(len(subwin_obj)):
-            subwin_obj[i].ch1_safty = float(cfg[f"current_limit{i+1}_ch1"])
-            subwin_obj[i].ch2_safty = float(cfg[f"current_limit{i+1}_ch2"])
-            print(f"当前限位{i+1}：{subwin_obj[i].ch1_safty}")
-            print(f"当前限位{i+1}：{subwin_obj[i].ch2_safty}")
-        self.power_control_obj5.safty = float(cfg["current_limit5_ch1"])
-        print(f"当前限位5：{self.power_control_obj5.safty}")
+            print("TCP 远程服务未启动（Auto_config.ini [TCP] auto_connect = False）")
+
+        serial_cfg = power_cfg["serial"]
+        if serial_cfg["auto_connect"]:
+            for obj in self.power_objs:
+                obj.portopen.click()
+        if serial_cfg["auto_output"]:
+            for obj in self.power_objs:
+                obj.start_btn.click()
+
+    def show_power_settings(self):
+        dlg = PowerSettingsDialog(self)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "重启提示",
+                "电源配置已保存，需要重启软件后生效。是否立即重启？",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if reply == QtWidgets.QMessageBox.Yes:
+                QtWidgets.QApplication.quit()
+                os.execl(sys.executable, sys.executable, *sys.argv)
 
     def showAbout(self):
         # 读取 CSV 文件
@@ -142,15 +167,14 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         QtWidgets.QMessageBox.warning(self, f"{str1}警告", f"电流过高，请检查电源电流是否过高，当前{str2}电流为{str3}A")
 
     def start_info(self, name, v, i):
+        sender = self.sender()
         reply = QtWidgets.QMessageBox.question(self,
                                                f'{name}',
                                                f"当前设置电压{v}V,电流{i}A是否正确？",
                                                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                                                QtWidgets.QMessageBox.No)
-        if reply == QtWidgets.QMessageBox.Yes:
-            self.power_control_obj5.pressNo = False
-        else:
-            self.power_control_obj5.pressNo = True
+        if sender:
+            sender.pressNo = reply != QtWidgets.QMessageBox.Yes
 
 
     def addBTN(self):

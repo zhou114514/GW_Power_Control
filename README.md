@@ -75,30 +75,21 @@ port = 4070             # TCP服务器端口
 auto_connect = True     # 是否自动连接
 ```
 
-#### 串口配置
-```ini
-[Serial]
-power_supply_square1 = COM    # 方形电源1串口
-power_supply_square2 = COM    # 方形电源2串口
-power_supply_long = COM       # 长条电源串口
-auto_connect = False          # 是否自动连接串口
-auto_output = False           # 是否自动输出
-```
-
-#### 安全限制
-```ini
-[Safty]
-current_limit1_ch1 = 100    # 方形电源1通道1电流限制(A)
-current_limit1_ch2 = 100    # 方形电源1通道2电流限制(A)
-current_limit5_ch1 = 100    # 长条电源电流限制(A)
-```
-
 #### 附加功能
 ```ini
 [Additional]
 power_add = False     # 是否启用电源添加功能
 power_del = False     # 是否启用电源删除功能
 ```
+
+### power_config.json 配置文件
+
+串口、自动连接/输出、默认电压电流及安全限流等电源相关配置均在此文件中管理，可通过界面「电源设置」修改。主要字段：
+
+- `serial.auto_connect` / `serial.auto_output`：启动时是否自动打开串口、开始输出
+- `devices[].port`：各电源默认串口
+- `devices[].default_voltage` / `default_current`：长条电源默认参数
+- `devices[].current_limit`（或方形电源的 `current_limit_ch1` / `current_limit_ch2`）：电流安全上限
 
 ## 📖 使用说明
 

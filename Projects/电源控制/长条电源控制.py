@@ -51,10 +51,14 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
     tcp_deflect =pyqtSignal([str, bool])
     _tcp_invoke_signal = pyqtSignal()
 
-    def __init__(self, name):
+    def __init__(self, name, default_voltage=42.0, default_current=3.5, device_id=None, remote_enabled=True):
         super(LongPower,self).__init__()
         self.name = name
+        self.device_id = device_id
+        self.remote_enabled = remote_enabled
         self.instances.append(self)
+        if device_id:
+            Tool.register_power_device(device_id, self)
         self.setupUi(self)
 
         self.isConnected = False
@@ -94,8 +98,10 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.volatge_signal.connect(lambda x: self.volatge_layout.updateData(x))
         self.current_signal.connect(lambda x: self.current_layout.updateData(x))
 
-        self.CH1_V.setText("42")
-        self.CH1_I.setText("3.5")
+        self.CH1_V.setText(str(default_voltage))
+        self.CH1_I.setText(str(default_current))
+        self.default_voltage = default_voltage
+        self.default_current = default_current
 
         self.sigInfo.connect(self.show_msg)
 
@@ -522,6 +528,20 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
     @classmethod
     def get_instances(cls):
         return cls.instances
+
+    @classmethod
+    def get_by_device_id(cls, device_id):
+        return Tool.get_power_device(device_id)
+
+    @classmethod
+    def get_default_remote(cls):
+        for inst in cls.instances:
+            if inst.remote_enabled:
+                return inst
+        return cls.instances[0] if cls.instances else None
     
     def __del__(self):
-        self.instances.remove(self)
+        if self in LongPower.instances:
+            LongPower.instances.remove(self)
+        if getattr(self, "device_id", None):
+            Tool.unregister_power_device(self.device_id)

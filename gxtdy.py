@@ -8,7 +8,7 @@ import multiprocessing
 import sys
 from PyQt5 import QtWidgets, QtCore
 from Projects.电源控制.UpperPC import UpperPcWin
-
+from Projects.电源控制.power_settings import PowerSettingsDialog
 from Projects.电源控制.tool import Tool
 
 
@@ -34,8 +34,11 @@ def main():
 
         Tool.check_config()
         mainWind = UpperPcWin()
-
         mainWind.show()
+
+        if not PowerSettingsDialog.run_if_needed(mainWind):
+            sys.exit(0)
+
         mainWind.initUi() #show以后才能加载子页面
 
         sys.exit(app.exec_())

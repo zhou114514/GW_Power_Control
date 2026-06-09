@@ -48,10 +48,13 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     channel2_signal = pyqtSignal(dict)
     dataUpSignal = pyqtSignal(str)
 
-    def __init__(self, name):
+    def __init__(self, name, device_id=None, ch1_voltage=5.0, ch1_current=1.0, ch2_voltage=12.0, ch2_current=0.5):
         super(SquarePower,self).__init__()
         self.name = name
+        self.device_id = device_id
         self.instances.append(self)
+        if device_id:
+            Tool.register_power_device(device_id, self)
         self.setupUi(self)
 
         self.isConnected = False
@@ -101,6 +104,11 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.ch2_currentI = 0
 
         self.sigInfo.connect(self.show_msg)
+
+        self.CH1_V.setText(str(ch1_voltage))
+        self.CH1_I.setText(str(ch1_current))
+        self.CH2_V.setText(str(ch2_voltage))
+        self.CH2_I.setText(str(ch2_current))
 
         #初始化右侧绘图
         da = {"电压": [], "电流": []}
