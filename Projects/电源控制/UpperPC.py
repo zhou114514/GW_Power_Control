@@ -101,9 +101,9 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
                 print(f"未找到串口 {dev['port']}（{dev['id']}），使用默认 COM1")
             print(f"电源 [{dev['id']}] {dev['name']} 已加载，类型={dev['type']}")
 
-        tcp_server = TCPServer.from_config()
-        if tcp_server.auto_connect:
-            tcp_server.start()
+        self.tcp_server = TCPServer.from_config()
+        if self.tcp_server.auto_connect:
+            self.tcp_server.start()
         else:
             print("TCP 远程服务未启动（Auto_config.ini [TCP] auto_connect = False）")
 

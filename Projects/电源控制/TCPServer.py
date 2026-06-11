@@ -34,7 +34,7 @@ class TCPServer(QThread):
         """从 Auto_config.ini [TCP] 读取监听地址、端口与是否自动启动"""
         cfg = Tool.read_config("TCP")
         host = cfg.get("ip", "127.0.0.1")
-        port = int(cfg.get("port", "4070"))
+        port = int(cfg.get("port", "10002"))
         auto_connect = cfg.get("auto_connect", "True").strip().lower() == "true"
         return cls(host=host, port=port, auto_connect=auto_connect)
 
