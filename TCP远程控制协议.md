@@ -330,8 +330,8 @@ auto_connect = True
 {
   "opcode": "DownDeflection",
   "parameter": {
-    "device": "GXT",
-    "Con": "Lower"
+    "Con": "Lower",
+    "device": "GXT"
   }
 }
 ```
