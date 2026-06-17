@@ -76,6 +76,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.psw = psw_xx_xx()
 
         self.btn_Control(False, False, False, False, False, False, False)
+        self._set_manual_controls_enabled(False)
 
         self.portcheck.clicked.connect(lambda: Tool.port_check(self.portchoose))
         self.portopen.clicked.connect(self.power_port_open)
@@ -130,6 +131,16 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self._tcp_op_result = None
         self._tcp_invoke_signal.connect(self._on_tcp_invoke)
         self.instances.append(self)
+
+    def _set_manual_controls_enabled(self, enabled):
+        self.CH1_V.setReadOnly(not enabled)
+        self.CH1_I.setReadOnly(not enabled)
+        self.CH1_V_send.setEnabled(enabled)
+        self.CH1_I_send.setEnabled(enabled)
+        self.sendALL.setEnabled(enabled)
+        self.CH1_V_check.setEnabled(enabled)
+        self.CH1_I_check.setEnabled(enabled)
+        self.checkALL.setEnabled(enabled)
 
     def _ensure_deflection_timer(self):
         if not hasattr(self, "deflectionTimer"):
@@ -342,6 +353,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.powername.setText(f"{V}V")
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
             self.isConnected = True
+            self._set_manual_controls_enabled(True)
             Tool.update_config_option("Serial", "power_supply_long", self.portchoose.currentText())
             return [True, ""]
         except Exception as e:
@@ -365,55 +377,74 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.psw.close()
         self.sigInfo.emit(f"已断开{self.portchoose.currentText()}")
         self.isConnected = False
+        self._set_manual_controls_enabled(False)
         self.btn_Control(False, False, False, False, False, False, False)
     
     def V_set(self, voltage=None):
-        # 设置电压
-        if voltage is None:
-            voltage = float(self.CH1_V.text())
-        self.psw.setVoltage(voltage)
-        self.sigInfo.emit(f"已设置CH1电压为{voltage}")
+        if not self.isConnected:
+            self.sigInfo.emit("Please connect power supply first")
+            return None
+        try:
+            if voltage is None:
+                voltage = float(self.CH1_V.text())
+            self.psw.setVoltage(voltage)
+            voltage = self.psw.getVoltage()
+            self.CH1_V_print.setText("Voltage: %.3f" % voltage)
+            self.sigInfo.emit("CH1 voltage set to %.3f V" % voltage)
+            return voltage
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Invalid voltage. Please enter a number.")
+            return None
 
-    
     def I_set(self, current=None):
-        # 设置电流
-        if current is None:
-            current = float(self.CH1_I.text())
-        self.psw.setCurrent(current)
-        self.sigInfo.emit(f"已设置CH1电流为{current}")
-
+        if not self.isConnected:
+            self.sigInfo.emit("Please connect power supply first")
+            return None
+        try:
+            if current is None:
+                current = float(self.CH1_I.text())
+            self.psw.setCurrent(current)
+            current = self.psw.getCurrent()
+            self.CH1_I_print.setText("Current: %.3f" % current)
+            self.sigInfo.emit("CH1 current set to %.3f A" % current)
+            return current
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Invalid current. Please enter a number.")
+            return None
 
     def sendALLData(self):
-        # 发送全部数据
-        self.psw.setVoltage(float(self.CH1_V.text()))
-        self.psw.setCurrent(float(self.CH1_I.text()))
-        self.sigInfo.emit("已发送全部数据")
+        if not self.isConnected:
+            self.sigInfo.emit("Please connect power supply first")
+            return None
+        try:
+            voltage = float(self.CH1_V.text())
+            current = float(self.CH1_I.text())
+            self.psw.setVoltageCurrent(voltage, current)
+            voltage, current = self.psw.getVoltageCurrent()
+            self.CH1_V_print.setText("Voltage: %.3f" % voltage)
+            self.CH1_I_print.setText("Current: %.3f" % current)
+            self.sigInfo.emit("All PSW settings sent")
+            return [voltage, current]
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Invalid voltage or current. Please enter numbers.")
+            return None
 
     def V_get(self):
-        # 获取设定电压
         V = self.psw.getVoltage()
-        # self.VoutCol[ch].clear()
-        self.CH1_V_print.setText("电压：" + str(V))
+        self.CH1_V_print.setText("Voltage: %.3f" % V)
         return V
-    
 
     def I_get(self):
-        # 获取设定电流
         I = self.psw.getCurrent()
-        # self.IoutCol[ch].clear()
-        self.CH1_I_print.setText("电流：" + str(I))
+        self.CH1_I_print.setText("Current: %.3f" % I)
         return I
-    
 
     def checkALLData(self):
-        # 检查全部数据
-        V,I = self.psw.getVoltage(), self.psw.getCurrent()
-        self.CH1_V_print.setText("电压：%.3f" % V)
-        self.CH1_I_print.setText("电流：%.3f" % I)
-        self.sigInfo.emit("已检查全部数据")
-        return [["%.3f"%V, "%.3f"%I]]
-
-    
+        V, I = self.psw.getVoltageCurrent()
+        self.CH1_V_print.setText("Voltage: %.3f" % V)
+        self.CH1_I_print.setText("Current: %.3f" % I)
+        self.sigInfo.emit("All PSW settings checked")
+        return [["%.3f" % V, "%.3f" % I]]
     def output_open(self):
         # 打开输出
         if self.isConnected:

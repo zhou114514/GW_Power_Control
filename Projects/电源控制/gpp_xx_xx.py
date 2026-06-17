@@ -23,7 +23,7 @@ class GPPPowerSupply(object):
     CH3_ALLOWED_VOLTAGES = (1.8, 2.5, 3.3, 5.0)
 
     def __init__(self):
-        self.__baudRate = 115200
+        self.__baudRate = 9600
         self.__parityBit = serial.PARITY_NONE
         self.__dataBit = serial.EIGHTBITS
         self.__stopBit = serial.STOPBITS_ONE
@@ -34,6 +34,7 @@ class GPPPowerSupply(object):
         self._read_timeout = 1
         self._write_timeout = 1
         self._supports_iout3 = True
+        self._command_termination = "\n"
 
         self.serial = None
         self._visa_rm = None
@@ -140,6 +141,7 @@ class GPPPowerSupply(object):
             self.serial.reset_input_buffer()
         if hasattr(self.serial, "reset_output_buffer"):
             self.serial.reset_output_buffer()
+        time.sleep(0.3)
 
     def _open_visa(self, resource_name, read_timeout):
         pyvisa = self._load_pyvisa()
@@ -215,11 +217,12 @@ class GPPPowerSupply(object):
 
     def _write(self, command):
         self._ensure_open()
+        command = str(command).rstrip("\r\n")
         if self._resource_type == "visa":
             self._visa_inst.write(command)
             return
 
-        payload = (command + "\n").encode("ascii")
+        payload = (command + self._command_termination).encode("ascii")
         self.serial.write(payload)
         self.serial.flush()
 

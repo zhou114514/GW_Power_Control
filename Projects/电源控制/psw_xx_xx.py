@@ -41,10 +41,11 @@ class psw_xx_xx(object):
         self.__dataBit = 8
         self.__stopBit = 1
         self.__dataFlowControl = None
-        self.eol = b'\r'
+        self.eol = b'\n'
         self.serial = None
-        self.voltage = 0
-        self.current = 0
+        self.voltage = None
+        self.current = None
+        self._command_termination = b'\n'
         self.lock = threading.RLock()
         self._port_name = None
         self._read_timeout = 1
@@ -117,6 +118,41 @@ class psw_xx_xx(object):
             # pySerial v3
             self.serial.timeout = timeout
 
+    def _write_command(self, command):
+        if isinstance(command, str):
+            command = command.encode("ascii")
+        command = command.rstrip(b"\r\n") + self._command_termination
+        self.serial.write(command)
+        self.serial.flush()
+
+    def _query(self, command):
+        self._write_command(command)
+        ret = self.serial.readline()
+        if ret == b"":
+            raise RuntimeError("No response for command: %s" % command)
+        return ret.decode(errors="ignore").strip()
+
+    def _query_apply(self):
+        ret = self._query("APPLy?")
+        parts = [part.strip() for part in ret.split(",")]
+        if len(parts) < 2:
+            raise RuntimeError("Unexpected APPLy? response: %s" % ret)
+        voltage = float(parts[0])
+        current = float(parts[1])
+        self.voltage = voltage
+        self.current = current
+        return voltage, current
+
+    @_auto_reconnect
+    def setVoltageCurrent(self, voltage, current):
+        voltage = float(voltage)
+        current = float(current)
+        self.isValidFloat(voltage)
+        self.isValidFloat(current)
+        with self.lock:
+            self._write_command("APPLy %.3f,%.3f" % (voltage, current))
+            self.voltage = voltage
+            self.current = current
     def isValidFloat(self, value):
         """
         检查给定的浮点数是否有效。允许三位以下有效数字。
@@ -143,11 +179,13 @@ class psw_xx_xx(object):
         """
         APPLy self.voltage,current
         """
+        current = float(current)
+        self.isValidFloat(current)
         with self.lock:
-            if self.voltage == 0:
-                self.voltage = self.getVoltage()
-            self.serial.write(b'APPLy %.3f,%.3f\n' % (self.voltage, current))
-            self.serial.flush()
+            voltage = self.voltage
+            if voltage is None:
+                voltage, _ = self._query_apply()
+            self._write_command("APPLy %.3f,%.3f" % (voltage, current))
             self.current = current
 
         # err = self.getError()
@@ -160,28 +198,29 @@ class psw_xx_xx(object):
         APPLy?
         """
         with self.lock:
-            self.serial.write(b'APPLy?\n')
-            self.serial.flush()
-            # time.sleep(1)
-            ret = self.serial.readline()
+            _, current = self._query_apply()
+            return current
 
-        # err = self.getError()
-        # if err != b'+0,"No error"':
-        #     raise RuntimeError(err)
-
-        # print(ret)
-            return float(ret.decode().split(',')[1])
+    @_auto_reconnect
+    def getVoltageCurrent(self):
+        """
+        APPLy? - query voltage and current settings in one request.
+        """
+        with self.lock:
+            return self._query_apply()
 
     @_auto_reconnect
     def setVoltage(self, voltage):
         """
         APPLy voltage,self.current
         """
+        voltage = float(voltage)
+        self.isValidFloat(voltage)
         with self.lock:
-            if self.current == 0:
-                self.current = self.getCurrent()
-            self.serial.write(b'APPLy %.3f,%.3f\n' % (voltage, self.current))
-            self.serial.flush()
+            current = self.current
+            if current is None:
+                _, current = self._query_apply()
+            self._write_command("APPLy %.3f,%.3f" % (voltage, current))
             self.voltage = voltage
 
         # err = self.getError()
@@ -194,16 +233,8 @@ class psw_xx_xx(object):
         APPLy?
         """
         with self.lock:
-            self.serial.write(b'APPLy?\n')
-            self.serial.flush()
-            ret = self.serial.readline()
-
-            # err = self.getError()
-            # if err != b'+0,"No error"':
-            #     raise RuntimeError(err)
-
-            return float(ret.decode().split(',')[0])
-
+            voltage, _ = self._query_apply()
+            return voltage
     @_auto_reconnect
     def getCurrentOutput(self):
         """
