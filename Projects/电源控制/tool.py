@@ -126,6 +126,20 @@ class Tool():
         with open(POWER_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
 
+    def save_device_port(device_id, port):
+        """将指定设备的串口号保存回 power_config.json"""
+        if not device_id or not port:
+            return
+        try:
+            cfg = Tool.read_power_config_raw()
+            for dev in cfg.get("devices", []):
+                if str(dev.get("id")) == str(device_id):
+                    dev["port"] = port
+                    break
+            Tool.save_power_config(cfg)
+        except Exception as e:
+            print(f"保存串口号失败（{device_id} -> {port}）：{e}")
+
     def need_power_scenario_setup():
         """是否尚未选择使用场景（首次启动需弹出设置）"""
         cfg = Tool.read_power_config_raw()

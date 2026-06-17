@@ -18,8 +18,8 @@ from .tool import Tool
 
 SCENARIO_META = [
     ("gxt_only", "光学头单机", "1个长条电源 42V/3.5A，仅连接光学头"),
-    ("gxt_fgw", "光学头+FGW光放", "2长条+2方形，连接光学头与FGW光放（电压电流可在此调整）"),
-    ("gxt_xw", "光学头+XW光放", "2长条：光学头 42V/3.5A + XW光放 5.4V/10A"),
+    ("gxt_xw", "光学头+XW光放", "2长条+2方形，连接光学头与XW光放"),
+    ("gxt_fgw", "光学头+FGW光放", "2长条：光学头 42V/3.5A + FGW光放 4.4V/13.5A"),
     ("manual", "手动配置", "自定义电源数量、类型与预设参数"),
 ]
 
@@ -56,54 +56,6 @@ def get_scenario_config(scenario_id):
                 }
             ],
         }
-    if scenario_id == "gxt_fgw":
-        return {
-            "serial": copy.deepcopy(serial),
-            "devices": [
-                {
-                    "id": "GXT",
-                    "name": "光学头电源",
-                    "type": "long",
-                    "port": "COM",
-                    "default_voltage": 42,
-                    "default_current": 3.5,
-                    "current_limit": 3.5,
-                    "remote": True,
-                },
-                {
-                    "id": "GF",
-                    "name": "FGW光放电源",
-                    "type": "long",
-                    "port": "COM",
-                    "default_voltage": 5,
-                    "default_current": 2,
-                    "current_limit": 2,
-                    "remote": True,
-                },
-                {
-                    "id": "SQ1",
-                    "name": "方形电源1",
-                    "type": "square",
-                    "port": "COM",
-                    "ch1": {"voltage": 5, "current": 1},
-                    "ch2": {"voltage": 12, "current": 0.5},
-                    "current_limit_ch1": 100,
-                    "current_limit_ch2": 100,
-                    "remote": False,
-                },
-                {
-                    "id": "SQ2",
-                    "name": "方形电源2",
-                    "type": "square",
-                    "port": "COM",
-                    "ch1": {"voltage": 5, "current": 1},
-                    "ch2": {"voltage": 12, "current": 0.5},
-                    "current_limit_ch1": 100,
-                    "current_limit_ch2": 100,
-                    "remote": False,
-                },
-            ],
-        }
     if scenario_id == "gxt_xw":
         return {
             "serial": copy.deepcopy(serial),
@@ -121,6 +73,54 @@ def get_scenario_config(scenario_id):
                 {
                     "id": "GF",
                     "name": "XW光放电源",
+                    "type": "long",
+                    "port": "COM",
+                    "default_voltage": 4.4,
+                    "default_current": 13.5,
+                    "current_limit": 13.5,
+                    "remote": True,
+                },
+                {
+                    "id": "SQ1",
+                    "name": "方形电源1",
+                    "type": "square",
+                    "port": "COM",
+                    "ch1": {"voltage": 12, "current": 0.5},
+                    "ch2": {"voltage": 5, "current": 0.5},
+                    "current_limit_ch1": 100,
+                    "current_limit_ch2": 100,
+                    "remote": False,
+                },
+                {
+                    "id": "SQ2",
+                    "name": "方形电源2",
+                    "type": "square",
+                    "port": "COM",
+                    "ch1": {"voltage": 5, "current": 0.5},
+                    "ch2": {"voltage": 5, "current": 0.5},
+                    "current_limit_ch1": 100,
+                    "current_limit_ch2": 100,
+                    "remote": False,
+                },
+            ],
+        }
+    if scenario_id == "gxt_fgw":
+        return {
+            "serial": copy.deepcopy(serial),
+            "devices": [
+                {
+                    "id": "GXT",
+                    "name": "光学头电源",
+                    "type": "long",
+                    "port": "COM",
+                    "default_voltage": 42,
+                    "default_current": 3.5,
+                    "current_limit": 3.5,
+                    "remote": True,
+                },
+                {
+                    "id": "GF",
+                    "name": "FGW光放电源",
                     "type": "long",
                     "port": "COM",
                     "default_voltage": 5.4,

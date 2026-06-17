@@ -134,7 +134,7 @@ auto_connect = True
 | `gxt_xw` | `GXT` | 光学头电源 | 42.0 V | 3.5 A |
 | `gxt_xw` | `GF` | XW光放电源 | 5.4 V | 10.0 A |
 | `gxt_fgw` | `GXT` | 光学头电源 | 42.0 V | 3.5 A |
-| `gxt_fgw` | `GF` | FGW光放电源 | 5.0 V | 2.0 A |
+| `gxt_fgw` | `GF` | FGW光放电源 | 4.4 V | 13.5 A |
 
 ---
 

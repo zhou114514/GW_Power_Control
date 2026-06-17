@@ -313,6 +313,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.powername.setText(f"{V}V")
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
             self.isConnected = True
+            Tool.save_device_port(self.device_id, self.portchoose.currentText())
             return [True, ""]
         except Exception as e:
             QMessageBox.warning(self, "错误", f"连接{self.portchoose.currentText()}失败，请检查端口是否正确！")
