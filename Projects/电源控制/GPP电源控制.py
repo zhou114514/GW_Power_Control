@@ -59,6 +59,9 @@ class GPPPower(QtWidgets.QWidget):
         self.instances.append(self)
         self.refresh_connection_options(show_message=False)
 
+    def _get_serial_config_key(self):
+        return str(getattr(self, "serial_config_key", "") or "power_supply_gpp").strip()
+
     def _build_ui(self):
         self.setObjectName(self.name)
         self.resize(1280, 820)
@@ -380,6 +383,7 @@ class GPPPower(QtWidgets.QWidget):
 
     def port_open(self, show_error=True):
         resource_name = self.portchoose.currentText().strip()
+        serial_config_key = self._get_serial_config_key()
         if not resource_name:
             hint = GPPPowerSupply.get_environment_hint() or "未检测到可用设备"
             if show_error:
@@ -388,7 +392,7 @@ class GPPPower(QtWidgets.QWidget):
 
         if self.isConnected:
             self.sigInfo.emit(f"已连接{resource_name}")
-            Tool.update_config_option("Serial", "power_supply_gpp", resource_name)
+            Tool.update_config_option("Serial", serial_config_key, resource_name)
             return [True, self.powername.text()]
 
         try:
@@ -396,7 +400,7 @@ class GPPPower(QtWidgets.QWidget):
             self.refresh_channel_names()
             self.isConnected = True
             self.sigInfo.emit(f"已连接{resource_name}")
-            Tool.update_config_option("Serial", "power_supply_gpp", resource_name)
+            Tool.update_config_option("Serial", serial_config_key, resource_name)
             self.btn_Control(True, True, True, False)
             return [True, self.powername.text()]
         except Exception as e:

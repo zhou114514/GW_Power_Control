@@ -132,6 +132,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self._tcp_invoke_signal.connect(self._on_tcp_invoke)
         self.instances.append(self)
 
+    def _get_serial_config_key(self):
+        return str(getattr(self, "serial_config_key", "") or "power_supply_long").strip()
+
     def _set_manual_controls_enabled(self, enabled):
         self.CH1_V.setReadOnly(not enabled)
         self.CH1_I.setReadOnly(not enabled)
@@ -343,9 +346,10 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             QMessageBox.information(self, "提示", f"已连接{self.portchoose.currentText()}")
 
     def port_open(self, show_error=True):
+        serial_config_key = self._get_serial_config_key()
         if self.isConnected:
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
-            Tool.update_config_option("Serial", "power_supply_long", self.portchoose.currentText())
+            Tool.update_config_option("Serial", serial_config_key, self.portchoose.currentText())
             return [True, ""]
         try:
             self.psw.open(self.portchoose.currentText())
@@ -354,7 +358,7 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
             self.isConnected = True
             self._set_manual_controls_enabled(True)
-            Tool.update_config_option("Serial", "power_supply_long", self.portchoose.currentText())
+            Tool.update_config_option("Serial", serial_config_key, self.portchoose.currentText())
             return [True, ""]
         except Exception as e:
             try:

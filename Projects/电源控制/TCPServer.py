@@ -28,23 +28,31 @@ class TCPServer(QThread):
         super(TCPServer, self).__init__()
         self.host = host
         self.port = int(port)
+        self._running = False
+
+    def stop(self):
+        self._running = False
+        self.requestInterruption()
 
     def run(self):
         print("启动 TCP 服务")
         print(f"监听地址: {self.host}:{self.port}")
+        self._running = True
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
             result = probe_socket.connect_ex((self.host, self.port))
             if result == 0:
                 print(f"端口 {self.port} 已被占用")
+                self._running = False
                 return
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server_socket.bind((self.host, self.port))
             server_socket.listen(5)
+            server_socket.settimeout(0.5)
 
-            while True:
+            while self._running and not self.isInterruptionRequested():
                 try:
                     client_socket, addr = server_socket.accept()
                     print(f"收到连接: {addr}")
@@ -54,8 +62,13 @@ class TCPServer(QThread):
                         daemon=True,
                     )
                     client_thread.start()
+                except socket.timeout:
+                    continue
                 except Exception as e:
-                    print(f"接受连接异常: {e}")
+                    if self._running:
+                        print(f"接受连接异常: {e}")
+
+        self._running = False
 
     def handle_client_connection(self, client_socket):
         try:

@@ -27,6 +27,14 @@ import configparser
 import json
 
 VERSION = get_current_version()
+DEFAULT_POWER_ITEMS = [
+    {"name": "方形电源", "type": "GPW", "serial_key": "power_supply_square1"},
+    {"name": "方形2", "type": "GPW", "serial_key": "power_supply_square2"},
+    {"name": "方形3", "type": "GPW", "serial_key": "power_supply_square3"},
+    {"name": "长条电源", "type": "PSW", "serial_key": "power_supply_long"},
+    {"name": "GPP", "type": "GPP", "serial_key": "power_supply_gpp"},
+]
+
 
 class AddPowerDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
@@ -95,6 +103,12 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         super(UpperPcWin, self).__init__()
         self.setupUi(self)  # 必须放在 show 之后
         self.added_power_widgets = {}  # {name: widget_obj}
+        self.default_power_items = []
+        self.default_power_widgets = []
+        self.default_power_widget_items = []
+        self.power_control_obj1 = None
+        self.power_control_obj5 = None
+        self.power_control_obj_gpp = None
         self.initial_button_name = None
         self.startup_square_notified = False
         self.startup_long_notified = False
@@ -103,6 +117,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         self.version_about_dialog = None
         self.update_check_thread = None
         self.is_updating = False
+        self.tcp_server = None
         self.alarm_player = AlarmPlayer()
         self.adjustStartupWindow()
         self.setWindowTitle(f"[SRC] 光学头电源控制 {VERSION}")
@@ -117,71 +132,350 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         # 删除所有左侧按钮
         self.leftlayout = QGridLayout()
 
+        self.addGlobalControlButtons()
         self.addBTN()
         self.delBTN()
-        cfg = Tool.read_config("Additional")
 
-        self.power_control_obj5 = LongPower("长条电源")
-        self.power_control_obj5.current_warn.connect(self.CurrentWarning)
-        self.power_control_obj5.start_signal.connect(self.start_info)
-        self.AddSubWin(self.power_control_obj5)
-        self.power_control_obj5.dataUpSignal.connect(self.update_data)
-
-        self.power_control_obj1 = SquarePower("方形电源")
-        self.power_control_obj1.current_warn.connect(self.CurrentWarning)
-        self.AddSubWin(self.power_control_obj1)
-
-        self.power_control_obj_gpp = GPPPower("GPP")
-        self.power_control_obj_gpp.current_warn.connect(self.CurrentWarning)
-        self.AddSubWin(self.power_control_obj_gpp)
-
-        subwin_obj = SquarePower.get_instances()
+        self.loadDefaultPowerWidgets()
+        self.loadPersistedAddedPowers()
+        self.applyConfiguredPorts()
+        self.applySafetyConfig()
+        self.refreshTotalControlSummary()
+        if "Btn总控" in self.leftBtnDict:
+            self.leftBtnCallback("Btn总控")
 
         # self.tcp = TCP("TCP")
+        self.tcp_server = TCPServer()
+        self.tcp_server.start()
 
-        server = TCPServer()
-        server.start()
-        
-
-        cfg = Tool.read_config("Serial")
-        for i in range(len(subwin_obj)):
-            if Tool.check_incombox(subwin_obj[i].portchoose, cfg[f"power_supply_square{i+1}"]):
-                subwin_obj[i].portchoose.setCurrentText(cfg[f"power_supply_square{i+1}"])
-            else:
-                subwin_obj[i].portchoose.setCurrentText("COM1")
-                print("未找到串口配置，使用默认配置")
-        if Tool.check_incombox(self.power_control_obj5.portchoose, cfg["power_supply_long"]):
-            self.power_control_obj5.portchoose.setCurrentText(cfg["power_supply_long"])
-        else:
-            self.power_control_obj5.portchoose.setCurrentText("COM1")
-            print("未找到串口配置，使用默认配置")
-        gpp_resource = cfg.get("power_supply_gpp", "").strip()
-        if gpp_resource and Tool.check_incombox(self.power_control_obj_gpp.portchoose, gpp_resource):
-            self.power_control_obj_gpp.portchoose.setCurrentText(gpp_resource)
-        elif self.power_control_obj_gpp.portchoose.count() > 0:
-            self.power_control_obj_gpp.portchoose.setCurrentIndex(0)
-        else:
-            print("未找到 GPP 可用设备")
-        self.startup_square_widgets = list(subwin_obj)
-        self.startup_auto_connect = (cfg["auto_connect"] == "True")
-        self.startup_auto_output = (cfg["auto_output"] == "True")
-        cfg = Tool.read_config("Safty")
-        for i in range(len(subwin_obj)):
-            subwin_obj[i].ch1_safty = float(cfg[f"current_limit{i+1}_ch1"])
-            subwin_obj[i].ch2_safty = float(cfg[f"current_limit{i+1}_ch2"])
-            print(f"square safety ch1[{i+1}] = {subwin_obj[i].ch1_safty}")
-            print(f"square safety ch2[{i+1}] = {subwin_obj[i].ch2_safty}")
-        self.power_control_obj5.safty = float(cfg["current_limit5_ch1"])
-        print(f"long safety = {self.power_control_obj5.safty}")
-        self.power_control_obj_gpp.ch1_safty = float(cfg.get("current_limit_gpp_ch1", "100"))
-        self.power_control_obj_gpp.ch2_safty = float(cfg.get("current_limit_gpp_ch2", "100"))
-        print(f"gpp safety ch1 = {self.power_control_obj_gpp.ch1_safty}")
-        print(f"gpp safety ch2 = {self.power_control_obj_gpp.ch2_safty}")
-
-        self.loadPersistedAddedPowers()
         self.adjustStartupWindow()
         # QtCore.QTimer.singleShot(1000, self.runStartupDetection)
         # QtCore.QTimer.singleShot(1500, self.checkUpdateOnStartup)
+
+    def getGlobalControlButtonStyle(self):
+        return (
+            "QPushButton {"
+            "font: 75 12pt \"微软雅黑\";"
+            "color: #ffffff;"
+            "background-color: #1769aa;"
+            "border: 1px solid #0d4f82;"
+            "border-radius: 6px;"
+            "padding: 9px 12px;"
+            "min-height: 38px;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #1f7fc8;"
+            "}"
+            "QPushButton:pressed {"
+            "background-color: #0b4d80;"
+            "}"
+            "QPushButton:disabled {"
+            "background-color: #8ea4b5;"
+            "border-color: #7b8c9a;"
+            "}"
+        )
+
+    def addGlobalControlButtons(self):
+        BtnCustom = QtWidgets.QPushButton(self.frame_left)
+        BtnCustom.setStyleSheet(self.getPowerButtonStyle())
+        BtnCustom.setCheckable(True)
+        BtnCustom.setObjectName("Btn总控")
+        BtnCustom.setText("总控")
+        self.leftlayout.addWidget(BtnCustom, self.leftlayout.count(), 0)
+        self.frame_left.setLayout(self.leftlayout)
+
+        page_custom = self.createTotalControlPage()
+        page_custom.setObjectName("Page总控")
+        self.stackedWidget.addWidget(page_custom)
+
+        self.bindBtnWidget[BtnCustom.objectName()] = page_custom.objectName()
+        self.leftBtnDict[BtnCustom.objectName()] = BtnCustom
+        self.rightPageDict[BtnCustom.objectName()] = page_custom
+
+        BtnCustom.clicked.connect(lambda: self.leftBtnCallback(BtnCustom.objectName()))
+
+    def createTotalControlPage(self):
+        page = QtWidgets.QWidget()
+        root = QtWidgets.QVBoxLayout(page)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(12)
+
+        action_widget = QtWidgets.QWidget(page)
+        action_layout = QtWidgets.QHBoxLayout(action_widget)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(14)
+
+        actions = [
+            ("oneKeyConnectBtn", "一键连接", self.oneKeyConnect),
+            ("oneKeyPowerOnBtn", "一键上电", self.oneKeyPowerOn),
+            ("oneKeyPowerOffBtn", "一键下电", self.oneKeyPowerOff),
+        ]
+        self.global_control_buttons = []
+        for object_name, text, callback in actions:
+            button = QtWidgets.QPushButton(action_widget)
+            button.setObjectName(object_name)
+            button.setText(text)
+            button.setStyleSheet(self.getGlobalControlButtonStyle())
+            button.setMinimumHeight(72)
+            button.clicked.connect(callback)
+            action_layout.addWidget(button)
+            self.global_control_buttons.append(button)
+
+        summary_widget = QtWidgets.QWidget(page)
+        summary_layout = QtWidgets.QVBoxLayout(summary_widget)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(8)
+
+        summary_title = QtWidgets.QLabel("默认电源通道预设与连接资源", summary_widget)
+        summary_title.setStyleSheet("font: 75 12pt \"微软雅黑\"; color: #1f2d3d;")
+        summary_layout.addWidget(summary_title)
+
+        self.total_summary_table = QtWidgets.QTableWidget(0, 6, summary_widget)
+        self.total_summary_table.setHorizontalHeaderLabels(
+            ["电源名称", "型号", "通道", "预设电压(V)", "预设电流(A)", "串口/资源"]
+        )
+        self.total_summary_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.total_summary_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.total_summary_table.setAlternatingRowColors(True)
+        self.total_summary_table.verticalHeader().setVisible(False)
+        self.total_summary_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        summary_layout.addWidget(self.total_summary_table)
+
+        root.addWidget(action_widget)
+        root.addWidget(summary_widget)
+        root.setStretch(0, 1)
+        root.setStretch(1, 2)
+        return page
+
+    def _read_control_text(self, control, default="-"):
+        if control is None:
+            return default
+        try:
+            if hasattr(control, "currentText"):
+                value = control.currentText()
+            else:
+                value = control.text()
+        except Exception:
+            return default
+
+        value = str(value).strip()
+        return value if value else default
+
+    def _get_widget_resource_text(self, widget_obj):
+        if not hasattr(widget_obj, "portchoose"):
+            return "-"
+        return self._read_control_text(widget_obj.portchoose)
+
+    def _get_widget_type_label(self, widget_obj):
+        if isinstance(widget_obj, SquarePower):
+            return "GPW"
+        if isinstance(widget_obj, LongPower):
+            return "长条"
+        if isinstance(widget_obj, GPPPower):
+            return "GPP"
+        if isinstance(widget_obj, MUNPower):
+            return "MU_N"
+        return "-"
+
+    def _build_total_summary_rows(self):
+        rows = []
+        for widget_obj in self.default_power_widgets:
+            power_name = getattr(widget_obj, "name", "-")
+            power_type = self._get_widget_type_label(widget_obj)
+            resource = self._get_widget_resource_text(widget_obj)
+
+            if isinstance(widget_obj, SquarePower):
+                rows.append([
+                    power_name,
+                    power_type,
+                    "CH1",
+                    self._read_control_text(getattr(widget_obj, "CH1_V", None)),
+                    self._read_control_text(getattr(widget_obj, "CH1_I", None)),
+                    resource,
+                ])
+                rows.append([
+                    power_name,
+                    power_type,
+                    "CH2",
+                    self._read_control_text(getattr(widget_obj, "CH2_V", None)),
+                    self._read_control_text(getattr(widget_obj, "CH2_I", None)),
+                    resource,
+                ])
+            elif isinstance(widget_obj, LongPower):
+                rows.append([
+                    power_name,
+                    power_type,
+                    "CH1",
+                    self._read_control_text(getattr(widget_obj, "CH1_V", None)),
+                    self._read_control_text(getattr(widget_obj, "CH1_I", None)),
+                    resource,
+                ])
+            elif isinstance(widget_obj, GPPPower):
+                rows.append([
+                    power_name,
+                    power_type,
+                    "CH1",
+                    self._read_control_text(getattr(widget_obj, "CH1_V", None)),
+                    self._read_control_text(getattr(widget_obj, "CH1_I", None)),
+                    resource,
+                ])
+                rows.append([
+                    power_name,
+                    power_type,
+                    "CH2",
+                    self._read_control_text(getattr(widget_obj, "CH2_V", None)),
+                    self._read_control_text(getattr(widget_obj, "CH2_I", None)),
+                    resource,
+                ])
+                rows.append([
+                    power_name,
+                    power_type,
+                    "CH3",
+                    self._read_control_text(getattr(widget_obj, "CH3_V", None)),
+                    "5.0",
+                    resource,
+                ])
+        return rows
+
+    def refreshTotalControlSummary(self):
+        table = getattr(self, "total_summary_table", None)
+        if table is None:
+            return
+
+        rows = self._build_total_summary_rows()
+        table.setRowCount(len(rows))
+        for row_index, row_data in enumerate(rows):
+            for column_index, value in enumerate(row_data):
+                item = QtWidgets.QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                table.setItem(row_index, column_index, item)
+        table.resizeRowsToContents()
+
+    def getDefaultPowerItems(self):
+        try:
+            cfg = Tool.read_config("DefaultPower")
+            raw_items = cfg.get("items", "")
+            parsed_items = json.loads(raw_items) if raw_items else []
+        except Exception:
+            parsed_items = []
+
+        if not isinstance(parsed_items, list):
+            parsed_items = []
+
+        default_items = []
+        type_counts = {"GPW": 0, "PSW": 0, "GPP": 0}
+        for item in parsed_items:
+            if not isinstance(item, dict):
+                continue
+
+            power_type = str(item.get("type", "")).strip().upper()
+            power_name = str(item.get("name", "")).strip()
+            if power_type not in ("GPW", "PSW", "GPP") or not power_name:
+                continue
+
+            type_counts[power_type] += 1
+            serial_key = str(item.get("serial_key", "")).strip()
+            if not serial_key:
+                if power_type == "GPW":
+                    serial_key = f"power_supply_square{type_counts[power_type]}"
+                elif power_type == "PSW":
+                    serial_key = "power_supply_long"
+                elif power_type == "GPP":
+                    serial_key = "power_supply_gpp"
+
+            default_items.append(
+                {
+                    "name": power_name,
+                    "type": power_type,
+                    "serial_key": serial_key,
+                }
+            )
+
+        if default_items:
+            return default_items
+        return [dict(item) for item in DEFAULT_POWER_ITEMS]
+
+    def loadDefaultPowerWidgets(self):
+        self.default_power_items = self.getDefaultPowerItems()
+        self.default_power_widgets = []
+        self.default_power_widget_items = []
+
+        for item in self.default_power_items:
+            if self.power_name_exists(item["name"]):
+                continue
+
+            widget_obj = self.create_power_widget(item["type"], item["name"])
+            widget_obj.serial_config_key = item.get("serial_key", "")
+            widget_obj.is_default_power = True
+            self.AddSubWin(widget_obj)
+            self.default_power_widgets.append(widget_obj)
+            self.default_power_widget_items.append((widget_obj, item))
+            self.registerDefaultPowerWidget(widget_obj)
+
+    def registerDefaultPowerWidget(self, widget_obj):
+        if isinstance(widget_obj, SquarePower) and self.power_control_obj1 is None:
+            self.power_control_obj1 = widget_obj
+        elif isinstance(widget_obj, LongPower) and self.power_control_obj5 is None:
+            self.power_control_obj5 = widget_obj
+        elif isinstance(widget_obj, GPPPower) and self.power_control_obj_gpp is None:
+            self.power_control_obj_gpp = widget_obj
+
+    def getWidgetSerialKey(self, widget_obj):
+        return str(getattr(widget_obj, "serial_config_key", "") or "").strip()
+
+    def applyConfiguredPorts(self):
+        cfg = Tool.read_config("Serial")
+
+        for widget_obj, _ in self.default_power_widget_items:
+            serial_key = self.getWidgetSerialKey(widget_obj)
+            self.applyConfiguredPort(widget_obj, cfg.get(serial_key, ""))
+
+        self.startup_square_widgets = [
+            widget_obj
+            for widget_obj in self.default_power_widgets
+            if isinstance(widget_obj, SquarePower)
+        ]
+        self.startup_auto_connect = (cfg.get("auto_connect", "False") == "True")
+        self.startup_auto_output = (cfg.get("auto_output", "False") == "True")
+
+    def applyConfiguredPort(self, widget_obj, configured_port):
+        if not hasattr(widget_obj, "portchoose"):
+            return
+
+        configured_port = str(configured_port or "").strip()
+        if configured_port and Tool.check_incombox(widget_obj.portchoose, configured_port):
+            widget_obj.portchoose.setCurrentText(configured_port)
+            return
+
+        if widget_obj.portchoose.count() > 0:
+            widget_obj.portchoose.setCurrentIndex(0)
+            return
+
+        print(f"{widget_obj.name} 未找到可用连接资源")
+
+    def applySafetyConfig(self):
+        cfg = Tool.read_config("Safty")
+        square_widgets = [
+            widget_obj
+            for widget_obj in self.default_power_widgets
+            if isinstance(widget_obj, SquarePower)
+        ]
+
+        for index, widget_obj in enumerate(square_widgets, start=1):
+            widget_obj.ch1_safty = float(cfg.get(f"current_limit{index}_ch1", "100"))
+            widget_obj.ch2_safty = float(cfg.get(f"current_limit{index}_ch2", "100"))
+            print(f"square safety ch1[{index}] = {widget_obj.ch1_safty}")
+            print(f"square safety ch2[{index}] = {widget_obj.ch2_safty}")
+
+        if self.power_control_obj5 is not None:
+            self.power_control_obj5.safty = float(cfg.get("current_limit5_ch1", "100"))
+            print(f"long safety = {self.power_control_obj5.safty}")
+
+        if self.power_control_obj_gpp is not None:
+            self.power_control_obj_gpp.ch1_safty = float(cfg.get("current_limit_gpp_ch1", "100"))
+            self.power_control_obj_gpp.ch2_safty = float(cfg.get("current_limit_gpp_ch2", "100"))
+            print(f"gpp safety ch1 = {self.power_control_obj_gpp.ch1_safty}")
+            print(f"gpp safety ch2 = {self.power_control_obj_gpp.ch2_safty}")
 
     def getConfigPath(self):
         return os.path.join(root_path, "Auto_config.ini")
@@ -225,6 +519,19 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
                 ports.append(port)
         return ports
 
+    def refreshWidgetConnectionOptions(self, widget_obj):
+        if hasattr(widget_obj, "refresh_connection_options"):
+            try:
+                return widget_obj.refresh_connection_options(show_message=False)
+            except TypeError:
+                return widget_obj.refresh_connection_options()
+
+        if hasattr(widget_obj, "portchoose"):
+            Tool.port_check(widget_obj.portchoose)
+            return self.getComboPorts(widget_obj.portchoose)
+
+        return []
+
     def getStartupCandidatePorts(self, widget_obj, config_port="", excluded_ports=None):
         ports = self.getComboPorts(widget_obj.portchoose)
         excluded_ports = excluded_ports or set()
@@ -264,48 +571,239 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             widget_obj.portchoose.setCurrentText(available_ports[0])
         return False, None
 
-    def detectStartupPowers(self, square_widgets, keep_connected=False):
+    def getAutoConnectCandidatePorts(self, widget_obj, config_port="", excluded_ports=None):
+        self.refreshWidgetConnectionOptions(widget_obj)
+        ports = self.getComboPorts(widget_obj.portchoose)
+        excluded_ports = excluded_ports or set()
+        candidates = []
+
+        preferred_ports = [
+            str(config_port or "").strip(),
+            widget_obj.portchoose.currentText().strip(),
+        ]
+        for port in preferred_ports:
+            if port and port in ports and port not in excluded_ports and port not in candidates:
+                candidates.append(port)
+
+        for port in ports:
+            if port not in excluded_ports and port not in candidates:
+                candidates.append(port)
+
+        return candidates
+
+    def autoConnectWidget(self, widget_obj, config_port="", excluded_ports=None):
+        excluded_ports = excluded_ports or set()
+        serial_key = self.getWidgetSerialKey(widget_obj)
+        original_port = widget_obj.portchoose.currentText().strip()
+
+        if getattr(widget_obj, "isConnected", False):
+            connected_port = widget_obj.portchoose.currentText().strip()
+            if connected_port:
+                if serial_key:
+                    Tool.update_config_option("Serial", serial_key, connected_port)
+                return True, connected_port, "已连接"
+
+        candidates = self.getAutoConnectCandidatePorts(
+            widget_obj,
+            config_port=config_port,
+            excluded_ports=excluded_ports,
+        )
+
+        for port in candidates:
+            widget_obj.portchoose.setCurrentText(port)
+            result = widget_obj.startup_port_open()
+            if result and result[0]:
+                if serial_key:
+                    Tool.update_config_option("Serial", serial_key, port)
+                return True, port, ""
+
+            try:
+                if getattr(widget_obj, "isConnected", False):
+                    widget_obj.power_port_close()
+            except Exception:
+                pass
+
+        available_ports = self.getComboPorts(widget_obj.portchoose)
+        if original_port and Tool.check_incombox(widget_obj.portchoose, original_port):
+            widget_obj.portchoose.setCurrentText(original_port)
+        elif available_ports:
+            widget_obj.portchoose.setCurrentIndex(0)
+        return False, None, "未识别到匹配设备"
+
+    def oneKeyConnect(self):
+        if not self.default_power_widget_items:
+            QtWidgets.QMessageBox.warning(self, "提示", "未配置默认电源")
+            return
+
+        self.setGlobalControlButtonsEnabled(False)
+        try:
+            serial_cfg = Tool.read_config("Serial")
+            occupied_ports = set()
+            success_items = []
+            failed_items = []
+
+            for widget_obj, item in self.default_power_widget_items:
+                serial_key = self.getWidgetSerialKey(widget_obj)
+                ok, port, message = self.autoConnectWidget(
+                    widget_obj,
+                    config_port=serial_cfg.get(serial_key, ""),
+                    excluded_ports=occupied_ports,
+                )
+                if ok:
+                    occupied_ports.add(port)
+                    success_items.append(f"{widget_obj.name} -> {port}")
+                else:
+                    failed_items.append(f"{widget_obj.name}: {message}")
+
+            message_lines = []
+            if success_items:
+                message_lines.append("连接成功：")
+                message_lines.extend(success_items)
+            if failed_items:
+                if message_lines:
+                    message_lines.append("")
+                message_lines.append("连接失败：")
+                message_lines.extend(failed_items)
+
+            if not message_lines:
+                message_lines.append("未执行连接操作")
+
+            QtWidgets.QMessageBox.information(self, "一键连接完成", "\n".join(message_lines))
+        finally:
+            self.refreshTotalControlSummary()
+            self.setGlobalControlButtonsEnabled(True)
+
+    def setGlobalControlButtonsEnabled(self, enabled):
+        for button in getattr(self, "global_control_buttons", []):
+            button.setEnabled(enabled)
+
+    def setBatchActionBusyText(self, action_name):
+        original_text = []
+        for button in getattr(self, "global_control_buttons", []):
+            original_text.append((button, button.text()))
+            if button.text() == action_name:
+                button.setText(f"{action_name}执行中...")
+        return original_text
+
+    def restoreGlobalControlButtonText(self, original_text):
+        for button, text in original_text:
+            button.setText(text)
+
+    def iterAllPowerWidgets(self):
+        widgets = []
+        for widget_obj in self.default_power_widgets + list(self.added_power_widgets.values()):
+            if widget_obj not in widgets:
+                widgets.append(widget_obj)
+        return widgets
+
+    def runBatchPowerAction(self, action_name, action_func_name):
+        widgets = self.iterAllPowerWidgets()
+        if not widgets:
+            QtWidgets.QMessageBox.warning(self, "提示", "当前没有电源设备")
+            return
+
+        self.setGlobalControlButtonsEnabled(False)
+        original_button_text = self.setBatchActionBusyText(action_name)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            success_items = []
+            failed_items = []
+            skipped_items = []
+
+            for widget_obj in widgets:
+                self.statusBar().showMessage(f"{action_name}：正在处理 {widget_obj.name}")
+                QtWidgets.QApplication.processEvents()
+
+                if not getattr(widget_obj, "isConnected", False):
+                    skipped_items.append(f"{widget_obj.name}: 未连接")
+                    QtWidgets.QApplication.processEvents()
+                    continue
+
+                action_func = getattr(widget_obj, action_func_name, None)
+                if action_func is None:
+                    failed_items.append(f"{widget_obj.name}: 不支持{action_name}")
+                    QtWidgets.QApplication.processEvents()
+                    continue
+
+                try:
+                    result = action_func()
+                    if result is None or result[0]:
+                        success_items.append(widget_obj.name)
+                    else:
+                        failed_items.append(
+                            f"{widget_obj.name}: {result[1] if len(result) > 1 else action_name + '失败'}"
+                        )
+                except Exception as e:
+                    failed_items.append(f"{widget_obj.name}: {e}")
+                finally:
+                    QtWidgets.QApplication.processEvents()
+
+            message_lines = []
+            if success_items:
+                message_lines.append(f"{action_name}成功：")
+                message_lines.extend(success_items)
+            if skipped_items:
+                if message_lines:
+                    message_lines.append("")
+                message_lines.append("跳过：")
+                message_lines.extend(skipped_items)
+            if failed_items:
+                if message_lines:
+                    message_lines.append("")
+                message_lines.append(f"{action_name}失败：")
+                message_lines.extend(failed_items)
+
+            QtWidgets.QMessageBox.information(self, action_name, "\n".join(message_lines))
+        finally:
+            self.statusBar().clearMessage()
+            self.restoreGlobalControlButtonText(original_button_text)
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self.refreshTotalControlSummary()
+            self.setGlobalControlButtonsEnabled(True)
+            QtWidgets.QApplication.processEvents()
+
+    def oneKeyPowerOn(self):
+        self.runBatchPowerAction("一键上电", "output_open_tcp")
+
+    def oneKeyPowerOff(self):
+        self.runBatchPowerAction("一键下电", "output_close_tcp")
+
+    def detectStartupPowers(self, square_widgets=None, keep_connected=False):
         serial_cfg = Tool.read_config("Serial")
         occupied_ports = set()
         square_detected = False
-        selected_button_name = "Btn" + self.power_control_obj5.name
-        if square_widgets:
-            square_detected, square_port = self.detectWidgetOnStartup(
-                square_widgets[0],
-                config_port=serial_cfg.get("power_supply_square1", ""),
+        long_detected = False
+        gpp_detected = False
+        selected_button_name = ""
+
+        for widget_obj, item in self.default_power_widget_items:
+            serial_key = self.getWidgetSerialKey(widget_obj)
+            detected, port = self.detectWidgetOnStartup(
+                widget_obj,
+                config_port=serial_cfg.get(serial_key, ""),
                 keep_connected=keep_connected,
-                excluded_ports=occupied_ports
+                excluded_ports=occupied_ports,
             )
-        if square_detected and not self.startup_square_notified:
-            QtWidgets.QMessageBox.information(self, "提示", f"已检测到方形电源：{square_port}")
-            self.startup_square_notified = True
-        if square_detected:
-            selected_button_name = "Btn" + square_widgets[0].name
-            occupied_ports.add(square_port)
+            if not detected:
+                continue
 
-        long_detected, long_port = self.detectWidgetOnStartup(
-            self.power_control_obj5,
-            config_port=serial_cfg.get("power_supply_long", ""),
-            keep_connected=keep_connected,
-            excluded_ports=occupied_ports
-        )
-        if long_detected and not self.startup_long_notified:
-            QtWidgets.QMessageBox.information(self, "提示", f"已检测到长条电源：{long_port}")
-            self.startup_long_notified = True
-        if long_detected:
-            occupied_ports.add(long_port)
+            occupied_ports.add(port)
+            if serial_key:
+                Tool.update_config_option("Serial", serial_key, port)
+            if not selected_button_name:
+                selected_button_name = "Btn" + widget_obj.name
 
-        gpp_detected, gpp_port = self.detectWidgetOnStartup(
-            self.power_control_obj_gpp,
-            config_port=serial_cfg.get("power_supply_gpp", ""),
-            keep_connected=keep_connected,
-            excluded_ports=occupied_ports
-        )
-        if gpp_detected and not self.startup_gpp_notified:
-            QtWidgets.QMessageBox.information(self, "提示", f"已检测到GPP电源：{gpp_port}")
-            self.startup_gpp_notified = True
-        if gpp_detected and not square_detected and not long_detected:
-            selected_button_name = "Btn" + self.power_control_obj_gpp.name
+            if isinstance(widget_obj, SquarePower):
+                square_detected = True
+            elif isinstance(widget_obj, LongPower):
+                long_detected = True
+            elif isinstance(widget_obj, GPPPower):
+                gpp_detected = True
+
+            QtWidgets.QMessageBox.information(self, "提示", f"已检测到{widget_obj.name}：{port}")
+
+        if not selected_button_name and self.power_control_obj5 is not None:
+            selected_button_name = "Btn" + self.power_control_obj5.name
 
         if not square_detected and not long_detected and not gpp_detected:
             QtWidgets.QMessageBox.information(self, "提示", "未检测到电源设备")
@@ -319,20 +817,22 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         )
 
         if self.startup_auto_output and not self.startup_auto_output_done:
-            for widget_obj in self.startup_square_widgets:
+            for widget_obj in self.default_power_widgets:
                 if widget_obj.isConnected:
-                    widget_obj.start_btn.click()
-            if self.power_control_obj5.isConnected:
-                self.power_control_obj5.start_btn.click()
-            if self.power_control_obj_gpp.isConnected:
-                self.power_control_obj_gpp.start_btn.click()
+                    output_open = getattr(widget_obj, "output_open_tcp", None)
+                    if output_open is not None:
+                        output_open()
             self.startup_auto_output_done = True
 
         if square_detected and self.initial_button_name and self.initial_button_name in self.leftBtnDict:
             self.leftBtnCallback(self.initial_button_name)
-        elif gpp_detected and ("Btn" + self.power_control_obj_gpp.name) in self.leftBtnDict:
+        elif (
+            gpp_detected
+            and self.power_control_obj_gpp is not None
+            and ("Btn" + self.power_control_obj_gpp.name) in self.leftBtnDict
+        ):
             self.leftBtnCallback("Btn" + self.power_control_obj_gpp.name)
-        elif ("Btn" + self.power_control_obj5.name) in self.leftBtnDict:
+        elif self.power_control_obj5 is not None and ("Btn" + self.power_control_obj5.name) in self.leftBtnDict:
             self.leftBtnCallback("Btn" + self.power_control_obj5.name)
 
     def loadPersistedAddedPowers(self):
@@ -565,6 +1065,19 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         self.is_updating = True
         QtWidgets.QMessageBox.information(self, "开始更新", "已开始自动更新，程序将关闭并在更新完成后自动重启。")
         self.close()
+
+    def stopTcpServer(self):
+        if self.tcp_server is None:
+            return
+
+        try:
+            if self.tcp_server.isRunning():
+                self.tcp_server.stop()
+                self.tcp_server.wait(1000)
+        except Exception as e:
+            print(f"停止 TCP 服务异常: {e}")
+        finally:
+            self.tcp_server = None
 
     def update_data(self, filename):
         # 上传电源记录
@@ -830,6 +1343,8 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
 
         for k, v in self.leftBtnDict.items():
             if k==BtnobjectName:
+                if k == "Btn总控":
+                    self.refreshTotalControlSummary()
                 self.stackedWidget.setCurrentWidget(self.rightPageDict[k] )
                 self.leftBtnDict[k].setChecked(True)
 
@@ -842,6 +1357,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
 
     def closeEvent(self, event):
         if self.is_updating:
+            self.stopTcpServer()
             event.accept()
             os._exit(0)
             return
@@ -854,6 +1370,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             QtWidgets.QMessageBox.No,
         )
         if reply == QtWidgets.QMessageBox.Yes:
+            self.stopTcpServer()
             event.accept()
             os._exit(0)
         else:

@@ -115,16 +115,25 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
 
         Tool.port_check(self.portchoose)
 
+    def _get_serial_config_key(self):
+        key = str(getattr(self, "serial_config_key", "") or "").strip()
+        if key:
+            return key
+        if self.name == "方形电源":
+            return "power_supply_square1"
+        return ""
+
     def power_port_open(self):
         re = self.port_open()
         if re[0]:
             QMessageBox.information(self, "提示", f"已连接 {self.portchoose.currentText()}\nCH1：{re[1]}V\nCH2：{re[2]}V")
 
     def port_open(self, show_error=True):
+        serial_config_key = self._get_serial_config_key()
         if self.isConnected:
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
-            if self.name == "方形电源":
-                Tool.update_config_option("Serial", "power_supply_square1", self.portchoose.currentText())
+            if serial_config_key:
+                Tool.update_config_option("Serial", serial_config_key, self.portchoose.currentText())
             return [True, self.GPD.getVoltage(1), self.GPD.getVoltage(2)]
         try:
             # 连接电源
@@ -136,8 +145,8 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
             self.CH2_name.setText(f"CH2：{ch2_v}V")
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
             self.isConnected = True
-            if self.name == "方形电源":
-                Tool.update_config_option("Serial", "power_supply_square1", self.portchoose.currentText())
+            if serial_config_key:
+                Tool.update_config_option("Serial", serial_config_key, self.portchoose.currentText())
             return [True, ch1_v, ch2_v]
         except Exception as e:
             try:
@@ -230,6 +239,77 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.msg.moveCursor(QTextCursor.End)
         self.msg.insertPlainText(f"{info}\n")
 
+    def _stop_plot_thread(self, timeout=2):
+        self.StopFlag = True
+        if not self.plot_thread.is_alive():
+            return True
+        if threading.current_thread() is self.plot_thread:
+            return False
+
+        self.plot_thread.join(timeout=timeout)
+        if self.plot_thread.is_alive():
+            self.sigInfo.emit("采集线程停止超时，继续执行下电")
+            return False
+        self.sigInfo.emit("已关闭采集")
+        return True
+
+    def _write_output_off_without_query(self):
+        serial_obj = getattr(self.GPD, "serial", None)
+        if serial_obj is None:
+            raise RuntimeError("Serial port is not open")
+        serial_obj.write(b"OUT0\n")
+        if hasattr(serial_obj, "flush"):
+            serial_obj.flush()
+
+    def _disable_output_for_close(self, tolerate_verify_error=False):
+        try:
+            self.GPD.enableOutput(False)
+            return ""
+        except Exception as e:
+            if not tolerate_verify_error:
+                raise
+
+            self._write_output_off_without_query()
+            warning = f"关闭输出命令已重发，状态校验异常: {e}"
+            self.sigInfo.emit(warning)
+            return warning
+
+    def _reset_plot_widget(self, plot_widget, zero_data):
+        try:
+            for key in zero_data:
+                if key in plot_widget.dataDict:
+                    plot_widget.dataDict[key] = plot_widget.dataDict[key] * 0
+                    plot_widget.posDict[key] = 0
+            plot_widget.updateData(zero_data)
+        except Exception as e:
+            self.sigInfo.emit(f"复位曲线显示失败: {e}")
+
+    def _reset_output_display(self):
+        self.CH1_V_print.setText("电压：0")
+        self.CH1_I_print.setText("电流：0")
+        self.CH2_V_print.setText("电压：0")
+        self.CH2_I_print.setText("电流：0")
+
+        zero_data = {PLOT_VOLTAGE_KEY: 0, PLOT_CURRENT_KEY: 0}
+        self._reset_plot_widget(self.channel1_layout, zero_data)
+        self._reset_plot_widget(self.channel2_layout, zero_data)
+
+    def _close_output_common(self, tolerate_verify_error=False):
+        if not self.isConnected:
+            return [False, "Port not connected"]
+
+        self._stop_plot_thread()
+        try:
+            warning = self._disable_output_for_close(tolerate_verify_error=tolerate_verify_error)
+        except Exception as e:
+            self.sigInfo.emit(f"关闭电源输出失败: {e}")
+            return [False, str(e)]
+
+        self.isOutput = False
+        self._reset_output_display()
+        self.sigInfo.emit("已关闭电源输出")
+        return [True, warning]
+
     def output_open(self):
         # 打开输出
         self.GPD.enableOutput()
@@ -242,12 +322,9 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
 
     def output_close(self):
         # 关闭输出
-        if self.plot_thread.is_alive():
-            self.StopFlag = True
-            self.plot_thread.join()
-        self.GPD.enableOutput(False)
-        self.sigInfo.emit("已关闭电源输出")
-        self.isOutput = False
+        result = self._close_output_common(tolerate_verify_error=True)
+        if not result[0]:
+            QMessageBox.warning(self, "错误", f"关闭电源输出失败：{result[1]}")
 
 
     def plot_callback(self):
@@ -352,11 +429,8 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         return [True, ""]
 
     def output_close_tcp(self):
-        """TCP 远程关闭输出，不阻塞主线程（采集线程会在下次循环中自行停止）。"""
-        self.GPD.enableOutput(False)
-        self.sigInfo.emit("已关闭电源输出")
-        self.isOutput = False
-        self.StopFlag = True
+        """TCP/批量远程关闭输出，容错 OUT0 后状态校验异常。"""
+        return self._close_output_common(tolerate_verify_error=True)
 
     def _tcp_set_voltage(self, channel, voltage):
         if not self.isConnected:

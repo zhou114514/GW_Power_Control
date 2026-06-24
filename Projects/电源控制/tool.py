@@ -19,6 +19,13 @@ Com_Dict = {}
 import os
 # 获取文件路径的根目录
 root_path = ""
+DEFAULT_POWER_ITEMS_JSON = (
+    '[{"name":"方形电源","type":"GPW","serial_key":"power_supply_square1"},'
+    '{"name":"方形2","type":"GPW","serial_key":"power_supply_square2"},'
+    '{"name":"方形3","type":"GPW","serial_key":"power_supply_square3"},'
+    '{"name":"长条电源","type":"PSW","serial_key":"power_supply_long"},'
+    '{"name":"GPP","type":"GPP","serial_key":"power_supply_gpp"}]'
+)
 
 if getattr(sys, 'frozen', False):
     root_path = os.path.dirname(os.path.abspath(sys.executable))
@@ -86,10 +93,14 @@ class Tool():
             config.set("TCP", "auto_connect", "True")
             config.add_section("Serial")
             config.set("Serial", "power_supply_square1", "COM")
+            config.set("Serial", "power_supply_square2", "COM")
+            config.set("Serial", "power_supply_square3", "COM")
             config.set("Serial", "power_supply_long", "COM")
             config.set("Serial", "power_supply_gpp", "COM")
             config.set("Serial", "auto_connect", "False")
             config.set("Serial", "auto_output", "False")
+            config.add_section("DefaultPower")
+            config.set("DefaultPower", "items", DEFAULT_POWER_ITEMS_JSON)
             config.add_section("Additional")
             config.set("Additional", "power_add", "False")
             config.set("Additional", "power_del", "False")
@@ -103,6 +114,10 @@ class Tool():
             config.add_section("Safty")
             config.set("Safty", "current_limit1_ch1", "100")
             config.set("Safty", "current_limit1_ch2", "100")
+            config.set("Safty", "current_limit2_ch1", "100")
+            config.set("Safty", "current_limit2_ch2", "100")
+            config.set("Safty", "current_limit3_ch1", "100")
+            config.set("Safty", "current_limit3_ch2", "100")
             config.set("Safty", "current_limit5_ch1", "100")
             config.set("Safty", "current_limit_gpp_ch1", "100")
             config.set("Safty", "current_limit_gpp_ch2", "100")
@@ -120,6 +135,8 @@ class Tool():
 
             serial_defaults = {
                 "power_supply_square1": "COM",
+                "power_supply_square2": "COM",
+                "power_supply_square3": "COM",
                 "power_supply_long": "COM",
                 "power_supply_gpp": "COM",
                 "auto_connect": "False",
@@ -129,6 +146,14 @@ class Tool():
                 if not config.has_option("Serial", key):
                     config.set("Serial", key, value)
                     changed = True
+
+            if not config.has_section("DefaultPower"):
+                config.add_section("DefaultPower")
+                changed = True
+
+            if not config.has_option("DefaultPower", "items"):
+                config.set("DefaultPower", "items", DEFAULT_POWER_ITEMS_JSON)
+                changed = True
 
             if not config.has_section("Update"):
                 config.add_section("Update")
@@ -152,6 +177,10 @@ class Tool():
             safety_defaults = {
                 "current_limit1_ch1": "100",
                 "current_limit1_ch2": "100",
+                "current_limit2_ch1": "100",
+                "current_limit2_ch2": "100",
+                "current_limit3_ch1": "100",
+                "current_limit3_ch2": "100",
                 "current_limit5_ch1": "100",
                 "current_limit_gpp_ch1": "100",
                 "current_limit_gpp_ch2": "100",
