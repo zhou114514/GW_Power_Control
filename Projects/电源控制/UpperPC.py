@@ -34,6 +34,9 @@ DEFAULT_POWER_ITEMS = [
     {"name": "长条电源", "type": "PSW", "serial_key": "power_supply_long"},
     {"name": "GPP", "type": "GPP", "serial_key": "power_supply_gpp"},
 ]
+TOTAL_CONTROL_NEED_CONNECT = "need_connect"
+TOTAL_CONTROL_CONNECTED = "connected"
+TOTAL_CONTROL_POWERED_ON = "powered_on"
 
 
 class AddPowerDialog(QtWidgets.QDialog):
@@ -114,6 +117,8 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         self.startup_long_notified = False
         self.startup_gpp_notified = False
         self.startup_auto_output_done = False
+        self.total_control_state = TOTAL_CONTROL_NEED_CONNECT
+        self.global_control_busy = False
         self.version_about_dialog = None
         self.update_check_thread = None
         self.is_updating = False
@@ -173,6 +178,17 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             "background-color: #8ea4b5;"
             "border-color: #7b8c9a;"
             "}"
+            "QPushButton[actionAllowed=\"false\"] {"
+            "color: #eef3f8;"
+            "background-color: #8ea4b5;"
+            "border-color: #7b8c9a;"
+            "}"
+            "QPushButton[actionAllowed=\"false\"]:hover {"
+            "background-color: #8ea4b5;"
+            "}"
+            "QPushButton[actionAllowed=\"false\"]:pressed {"
+            "background-color: #8ea4b5;"
+            "}"
         )
 
     def addGlobalControlButtons(self):
@@ -220,6 +236,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             button.clicked.connect(callback)
             action_layout.addWidget(button)
             self.global_control_buttons.append(button)
+        self.applyTotalControlButtonState()
 
         summary_widget = QtWidgets.QWidget(page)
         summary_layout = QtWidgets.QVBoxLayout(summary_widget)
@@ -591,7 +608,11 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
 
         return candidates
 
-    def autoConnectWidget(self, widget_obj, config_port="", excluded_ports=None):
+    def autoConnectWidget(self, widget_obj, config_port="", excluded_ports=None, progress_callback=None):
+        def notify_progress(message):
+            if progress_callback is not None:
+                progress_callback(widget_obj, message)
+
         excluded_ports = excluded_ports or set()
         serial_key = self.getWidgetSerialKey(widget_obj)
         original_port = widget_obj.portchoose.currentText().strip()
@@ -603,15 +624,19 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
                     Tool.update_config_option("Serial", serial_key, connected_port)
                 return True, connected_port, "已连接"
 
+        notify_progress("正在刷新连接资源")
         candidates = self.getAutoConnectCandidatePorts(
             widget_obj,
             config_port=config_port,
             excluded_ports=excluded_ports,
         )
+        notify_progress("连接资源刷新完成")
 
         for port in candidates:
+            notify_progress(f"正在尝试 {port}")
             widget_obj.portchoose.setCurrentText(port)
             result = widget_obj.startup_port_open()
+            notify_progress(f"{port} 尝试完成")
             if result and result[0]:
                 if serial_key:
                     Tool.update_config_option("Serial", serial_key, port)
@@ -619,41 +644,137 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
 
             try:
                 if getattr(widget_obj, "isConnected", False):
+                    notify_progress(f"{port} 连接失败，正在清理")
                     widget_obj.power_port_close()
             except Exception:
                 pass
+            notify_progress(f"{port} 清理完成")
 
         available_ports = self.getComboPorts(widget_obj.portchoose)
         if original_port and Tool.check_incombox(widget_obj.portchoose, original_port):
             widget_obj.portchoose.setCurrentText(original_port)
         elif available_ports:
             widget_obj.portchoose.setCurrentIndex(0)
+        notify_progress("未识别到匹配设备")
         return False, None, "未识别到匹配设备"
 
+    def getTotalControlAllowedActions(self):
+        state = getattr(self, "total_control_state", TOTAL_CONTROL_NEED_CONNECT)
+        if state == TOTAL_CONTROL_CONNECTED:
+            return {"oneKeyPowerOnBtn"}
+        if state == TOTAL_CONTROL_POWERED_ON:
+            return {"oneKeyPowerOffBtn"}
+        return {"oneKeyConnectBtn"}
+
+    def setTotalControlState(self, state):
+        self.total_control_state = state
+        self.applyTotalControlButtonState()
+
+    def applyTotalControlButtonState(self):
+        buttons = getattr(self, "global_control_buttons", [])
+        if not buttons:
+            return
+
+        busy = getattr(self, "global_control_busy", False)
+        allowed_actions = self.getTotalControlAllowedActions()
+        for button in buttons:
+            action_allowed = button.objectName() in allowed_actions
+            button.setEnabled(not busy)
+            button.setProperty("actionAllowed", "true" if action_allowed else "false")
+            if busy:
+                button.setCursor(QtCore.Qt.WaitCursor)
+            elif action_allowed:
+                button.setCursor(QtCore.Qt.PointingHandCursor)
+            else:
+                button.setCursor(QtCore.Qt.ForbiddenCursor)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+    def isTotalControlActionAllowed(self, object_name):
+        return object_name in self.getTotalControlAllowedActions()
+
+    def showTotalControlBlockedMessage(self, object_name):
+        state = getattr(self, "total_control_state", TOTAL_CONTROL_NEED_CONNECT)
+        messages = {
+            TOTAL_CONTROL_NEED_CONNECT: {
+                "oneKeyPowerOnBtn": "请先点击一键连接，连接成功后再执行一键上电。",
+                "oneKeyPowerOffBtn": "请先点击一键连接并完成一键上电，成功后再执行一键下电。",
+            },
+            TOTAL_CONTROL_CONNECTED: {
+                "oneKeyConnectBtn": "已完成一键连接，请继续执行一键上电。",
+                "oneKeyPowerOffBtn": "请先执行一键上电，成功后才能执行一键下电。",
+            },
+            TOTAL_CONTROL_POWERED_ON: {
+                "oneKeyConnectBtn": "当前已完成一键上电，请先执行一键下电。",
+                "oneKeyPowerOnBtn": "当前已完成一键上电，请勿重复上电，请执行一键下电。",
+            },
+        }
+        message = messages.get(state, {}).get(object_name, "当前流程状态不允许执行该操作。")
+        QtWidgets.QMessageBox.warning(self, "操作限制", message)
+
+    def guardTotalControlAction(self, object_name):
+        if getattr(self, "global_control_busy", False):
+            return False
+        if self.isTotalControlActionAllowed(object_name):
+            return True
+        self.showTotalControlBlockedMessage(object_name)
+        return False
+
+    def showOneKeyConnectLoadingDialog(self):
+        dialog = QtWidgets.QProgressDialog(self)
+        dialog.setWindowTitle("一键连接")
+        dialog.setLabelText("正在一键连接，请稍候...")
+        dialog.setCancelButton(None)
+        dialog.setRange(0, 0)
+        dialog.setMinimumDuration(0)
+        dialog.setWindowModality(QtCore.Qt.ApplicationModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.resize(360, 110)
+        dialog.show()
+        QtWidgets.QApplication.processEvents()
+        return dialog
+
     def oneKeyConnect(self):
+        if not self.guardTotalControlAction("oneKeyConnectBtn"):
+            return
+
         if not self.default_power_widget_items:
             QtWidgets.QMessageBox.warning(self, "提示", "未配置默认电源")
             return
 
+        connect_success = False
+        message_text = ""
+        loading_dialog = None
         self.setGlobalControlButtonsEnabled(False)
         try:
+            loading_dialog = self.showOneKeyConnectLoadingDialog()
             serial_cfg = Tool.read_config("Serial")
             occupied_ports = set()
             success_items = []
             failed_items = []
 
+            def update_connect_progress(widget_obj, detail):
+                if loading_dialog is not None:
+                    loading_dialog.setLabelText(f"正在连接 {widget_obj.name}，{detail}...")
+                QtWidgets.QApplication.processEvents()
+
             for widget_obj, item in self.default_power_widget_items:
+                update_connect_progress(widget_obj, "准备中")
                 serial_key = self.getWidgetSerialKey(widget_obj)
                 ok, port, message = self.autoConnectWidget(
                     widget_obj,
                     config_port=serial_cfg.get(serial_key, ""),
                     excluded_ports=occupied_ports,
+                    progress_callback=update_connect_progress,
                 )
                 if ok:
                     occupied_ports.add(port)
                     success_items.append(f"{widget_obj.name} -> {port}")
                 else:
                     failed_items.append(f"{widget_obj.name}: {message}")
+                update_connect_progress(widget_obj, "处理完成")
 
             message_lines = []
             if success_items:
@@ -668,14 +789,24 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             if not message_lines:
                 message_lines.append("未执行连接操作")
 
-            QtWidgets.QMessageBox.information(self, "一键连接完成", "\n".join(message_lines))
+            message_text = "\n".join(message_lines)
+            connect_success = bool(success_items) and not failed_items
         finally:
             self.refreshTotalControlSummary()
+            self.setTotalControlState(
+                TOTAL_CONTROL_CONNECTED if connect_success else TOTAL_CONTROL_NEED_CONNECT
+            )
             self.setGlobalControlButtonsEnabled(True)
+            if loading_dialog is not None:
+                loading_dialog.close()
+                loading_dialog.deleteLater()
+            QtWidgets.QApplication.processEvents()
+
+        QtWidgets.QMessageBox.information(self, "一键连接完成", message_text)
 
     def setGlobalControlButtonsEnabled(self, enabled):
-        for button in getattr(self, "global_control_buttons", []):
-            button.setEnabled(enabled)
+        self.global_control_busy = not enabled
+        self.applyTotalControlButtonState()
 
     def setBatchActionBusyText(self, action_name):
         original_text = []
@@ -700,7 +831,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         widgets = self.iterAllPowerWidgets()
         if not widgets:
             QtWidgets.QMessageBox.warning(self, "提示", "当前没有电源设备")
-            return
+            return False
 
         self.setGlobalControlButtonsEnabled(False)
         original_button_text = self.setBatchActionBusyText(action_name)
@@ -753,7 +884,9 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
                 message_lines.append(f"{action_name}失败：")
                 message_lines.extend(failed_items)
 
+            action_success = bool(success_items) and not failed_items
             QtWidgets.QMessageBox.information(self, action_name, "\n".join(message_lines))
+            return action_success
         finally:
             self.statusBar().clearMessage()
             self.restoreGlobalControlButtonText(original_button_text)
@@ -763,10 +896,16 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             QtWidgets.QApplication.processEvents()
 
     def oneKeyPowerOn(self):
-        self.runBatchPowerAction("一键上电", "output_open_tcp")
+        if not self.guardTotalControlAction("oneKeyPowerOnBtn"):
+            return
+        if self.runBatchPowerAction("一键上电", "output_open_tcp"):
+            self.setTotalControlState(TOTAL_CONTROL_POWERED_ON)
 
     def oneKeyPowerOff(self):
-        self.runBatchPowerAction("一键下电", "output_close_tcp")
+        if not self.guardTotalControlAction("oneKeyPowerOffBtn"):
+            return
+        if self.runBatchPowerAction("一键下电", "output_close_tcp"):
+            self.setTotalControlState(TOTAL_CONTROL_NEED_CONNECT)
 
     def detectStartupPowers(self, square_widgets=None, keep_connected=False):
         serial_cfg = Tool.read_config("Serial")
