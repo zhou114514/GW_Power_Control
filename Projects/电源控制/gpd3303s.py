@@ -5,6 +5,7 @@ Will Instrument Co., Ltd.
 
 import serial
 import sys
+import threading
 
 class MySerial(serial.Serial):
     """
@@ -42,6 +43,7 @@ class GPD3303S(object):
         self.__dataFlowControl = None
         self.eol = b'\r'
         self.serial = None
+        self.lock = threading.RLock()
 
     def open(self, port, readTimeOut = 1, writeTimeOut = 1):
         self.serial = MySerial(port         = port,
@@ -218,4 +220,32 @@ class GPD3303S(object):
         Because the delimiter setting has been changed. 
         """
         self.eol = eol
+
+
+def _locked_serial_transaction(method):
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
+for _method_name in (
+    "open",
+    "close",
+    "setCurrent",
+    "getCurrent",
+    "setVoltage",
+    "getVoltage",
+    "getCurrentOutput",
+    "getVoltageOutput",
+    "enableOutput",
+    "getError",
+):
+    setattr(
+        GPD3303S,
+        _method_name,
+        _locked_serial_transaction(getattr(GPD3303S, _method_name)),
+    )
+
+del _method_name
 

@@ -294,6 +294,127 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             return "MU_N"
         return "-"
 
+    def _is_widget_connected(self, widget_obj):
+        return bool(getattr(widget_obj, "isConnected", False))
+
+    def _get_widget_connection_token(self, widget_obj):
+        if isinstance(widget_obj, SquarePower):
+            return id(getattr(widget_obj.GPD, "serial", None))
+        if isinstance(widget_obj, LongPower):
+            return id(getattr(widget_obj.psw, "serial", None))
+        if isinstance(widget_obj, GPPPower):
+            gpp = widget_obj.gpp
+            return (
+                id(getattr(gpp, "serial", None)),
+                id(getattr(gpp, "_visa_inst", None)),
+            )
+        return None
+
+    def _get_widget_cache_key(self, widget_obj):
+        return (
+            self._get_widget_resource_text(widget_obj),
+            self._get_widget_connection_token(widget_obj),
+        )
+
+    def _clear_total_preset_cache(self, widget_obj):
+        widget_obj._total_preset_cache = None
+        widget_obj._total_preset_cache_key = None
+
+    def _get_total_preset_cache(self, widget_obj):
+        if not self._is_widget_connected(widget_obj):
+            self._clear_total_preset_cache(widget_obj)
+            return None
+
+        cache = getattr(widget_obj, "_total_preset_cache", None)
+        cache_key = getattr(widget_obj, "_total_preset_cache_key", None)
+        if cache is None or cache_key != self._get_widget_cache_key(widget_obj):
+            return None
+        return cache
+
+    def _set_total_preset_cache(self, widget_obj, cache):
+        widget_obj._total_preset_cache = cache
+        widget_obj._total_preset_cache_key = self._get_widget_cache_key(widget_obj)
+
+    def _format_total_summary_value(self, value):
+        if value is None:
+            return "-"
+        try:
+            return "%.3f" % float(value)
+        except (TypeError, ValueError):
+            text = str(value).strip()
+            return text if text else "-"
+
+    def _read_total_summary_settings(self, read_func):
+        try:
+            voltage, current = read_func()
+            return (
+                self._format_total_summary_value(voltage),
+                self._format_total_summary_value(current),
+            )
+        except Exception:
+            return "读取失败", "读取失败"
+
+    def cacheTotalPresetSettings(self, widget_obj):
+        if not self._is_widget_connected(widget_obj):
+            self._clear_total_preset_cache(widget_obj)
+            return
+
+        cache = {}
+        if isinstance(widget_obj, SquarePower):
+            for channel in (1, 2):
+                cache[channel] = self._read_total_summary_settings(
+                    lambda channel=channel: (
+                        widget_obj.GPD.getVoltage(channel),
+                        widget_obj.GPD.getCurrent(channel),
+                    )
+                )
+        elif isinstance(widget_obj, LongPower):
+            cache[1] = self._read_total_summary_settings(widget_obj.psw.getVoltageCurrent)
+        elif isinstance(widget_obj, GPPPower):
+            for channel in (1, 2, 3):
+                cache[channel] = self._read_total_summary_settings(
+                    lambda channel=channel: (
+                        widget_obj.gpp.getVoltage(channel),
+                        widget_obj.gpp.getCurrent(channel),
+                    )
+                )
+        else:
+            return
+
+        self._set_total_preset_cache(widget_obj, cache)
+
+    def _get_unconnected_summary_settings(self, widget_obj):
+        if not self._is_widget_connected(widget_obj):
+            return "未连接", "未连接"
+        return None
+
+    def _get_square_channel_settings(self, widget_obj, channel):
+        unconnected = self._get_unconnected_summary_settings(widget_obj)
+        if unconnected is not None:
+            return unconnected
+        cache = self._get_total_preset_cache(widget_obj)
+        if cache is None:
+            return "未读取", "未读取"
+        return cache.get(channel, ("读取失败", "读取失败"))
+
+    def _get_long_channel_settings(self, widget_obj):
+        unconnected = self._get_unconnected_summary_settings(widget_obj)
+        if unconnected is not None:
+            return unconnected
+        cache = self._get_total_preset_cache(widget_obj)
+        if cache is None:
+            return "未读取", "未读取"
+        return cache.get(1, ("读取失败", "读取失败"))
+
+    def _get_gpp_channel_settings(self, widget_obj, channel):
+        unconnected = self._get_unconnected_summary_settings(widget_obj)
+        if unconnected is not None:
+            return unconnected
+        cache = self._get_total_preset_cache(widget_obj)
+        if cache is None:
+            return "未读取", "未读取"
+        return cache.get(channel, ("读取失败", "读取失败"))
+
     def _build_total_summary_rows(self):
         rows = []
         for widget_obj in self.default_power_widgets:
@@ -302,54 +423,60 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             resource = self._get_widget_resource_text(widget_obj)
 
             if isinstance(widget_obj, SquarePower):
+                ch1_voltage, ch1_current = self._get_square_channel_settings(widget_obj, 1)
+                ch2_voltage, ch2_current = self._get_square_channel_settings(widget_obj, 2)
                 rows.append([
                     power_name,
                     power_type,
                     "CH1",
-                    self._read_control_text(getattr(widget_obj, "CH1_V", None)),
-                    self._read_control_text(getattr(widget_obj, "CH1_I", None)),
+                    ch1_voltage,
+                    ch1_current,
                     resource,
                 ])
                 rows.append([
                     power_name,
                     power_type,
                     "CH2",
-                    self._read_control_text(getattr(widget_obj, "CH2_V", None)),
-                    self._read_control_text(getattr(widget_obj, "CH2_I", None)),
+                    ch2_voltage,
+                    ch2_current,
                     resource,
                 ])
             elif isinstance(widget_obj, LongPower):
+                ch1_voltage, ch1_current = self._get_long_channel_settings(widget_obj)
                 rows.append([
                     power_name,
                     power_type,
                     "CH1",
-                    self._read_control_text(getattr(widget_obj, "CH1_V", None)),
-                    self._read_control_text(getattr(widget_obj, "CH1_I", None)),
+                    ch1_voltage,
+                    ch1_current,
                     resource,
                 ])
             elif isinstance(widget_obj, GPPPower):
+                ch1_voltage, ch1_current = self._get_gpp_channel_settings(widget_obj, 1)
+                ch2_voltage, ch2_current = self._get_gpp_channel_settings(widget_obj, 2)
+                ch3_voltage, ch3_current = self._get_gpp_channel_settings(widget_obj, 3)
                 rows.append([
                     power_name,
                     power_type,
                     "CH1",
-                    self._read_control_text(getattr(widget_obj, "CH1_V", None)),
-                    self._read_control_text(getattr(widget_obj, "CH1_I", None)),
+                    ch1_voltage,
+                    ch1_current,
                     resource,
                 ])
                 rows.append([
                     power_name,
                     power_type,
                     "CH2",
-                    self._read_control_text(getattr(widget_obj, "CH2_V", None)),
-                    self._read_control_text(getattr(widget_obj, "CH2_I", None)),
+                    ch2_voltage,
+                    ch2_current,
                     resource,
                 ])
                 rows.append([
                     power_name,
                     power_type,
                     "CH3",
-                    self._read_control_text(getattr(widget_obj, "CH3_V", None)),
-                    "5.0",
+                    ch3_voltage,
+                    ch3_current,
                     resource,
                 ])
         return rows
@@ -620,6 +747,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         if getattr(widget_obj, "isConnected", False):
             connected_port = widget_obj.portchoose.currentText().strip()
             if connected_port:
+                self.cacheTotalPresetSettings(widget_obj)
                 if serial_key:
                     Tool.update_config_option("Serial", serial_key, connected_port)
                 return True, connected_port, "已连接"
@@ -638,6 +766,8 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             result = widget_obj.startup_port_open()
             notify_progress(f"{port} 尝试完成")
             if result and result[0]:
+                notify_progress(f"{port} 正在读取实机预设")
+                self.cacheTotalPresetSettings(widget_obj)
                 if serial_key:
                     Tool.update_config_option("Serial", serial_key, port)
                 return True, port, ""
@@ -646,6 +776,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
                 if getattr(widget_obj, "isConnected", False):
                     notify_progress(f"{port} 连接失败，正在清理")
                     widget_obj.power_port_close()
+                    self._clear_total_preset_cache(widget_obj)
             except Exception:
                 pass
             notify_progress(f"{port} 清理完成")
