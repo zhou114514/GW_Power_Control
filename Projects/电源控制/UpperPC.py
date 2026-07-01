@@ -1448,6 +1448,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
             widget_obj.current_warn.connect(self.CurrentWarning)
             widget_obj.voltage_warn.connect(self.VoltageWarning)
             widget_obj.structure_changed.connect(self.savePersistedAddedPowers)
+            widget_obj.structure_changed.connect(lambda: self.refreshTotalControlSummary())
             return widget_obj
 
         widget_obj = SquarePower(power_name)

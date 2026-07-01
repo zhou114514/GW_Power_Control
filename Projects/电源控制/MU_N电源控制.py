@@ -15,8 +15,6 @@ from .tool import root_path
 
 
 TOTAL_SEC = 20
-TIME_GAP = 25
-POINT_NUM = int(100 / TIME_GAP * TOTAL_SEC)
 MAX_PLOT_FAILURES = 3
 MAX_MUN_CHANNELS = 10
 PLOT_VOLTAGE_KEY = "电压"
@@ -24,6 +22,10 @@ PLOT_CURRENT_KEY = "电流"
 DATA_DIR = os.path.join(".", "电源采集数据")
 DEFAULT_VOLTAGE_LIMIT = 100.0
 DEFAULT_CURRENT_LIMIT = 100.0
+CHANNEL_ROW_COUNT = 5
+DEFAULT_SAMPLE_RATE_HZ = 60
+MIN_SAMPLE_RATE_HZ = 1
+MAX_SAMPLE_RATE_HZ = 60
 
 
 class MUNPower(QtWidgets.QWidget):
@@ -33,6 +35,7 @@ class MUNPower(QtWidgets.QWidget):
     voltage_warn = pyqtSignal([str, str, str])
     structure_changed = pyqtSignal()
     plot_update_signal = pyqtSignal(int, dict)
+    plot_finished_signal = pyqtSignal()
     _tcp_invoke_signal = pyqtSignal()
 
     def __init__(self, name, channel_count=3):
@@ -45,6 +48,9 @@ class MUNPower(QtWidgets.QWidget):
         self.CurrentValues = {channel: [0.0, 0.0] for channel in range(1, self.channel_count + 1)}
         self.voltage_limits = {channel: DEFAULT_VOLTAGE_LIMIT for channel in range(1, self.channel_count + 1)}
         self.current_limits = {channel: DEFAULT_CURRENT_LIMIT for channel in range(1, self.channel_count + 1)}
+        self.channel_output_states = {channel: False for channel in range(1, self.channel_count + 1)}
+        self.channel_ui_widgets = {}
+        self.sample_rate_hz = DEFAULT_SAMPLE_RATE_HZ
         self.mun = MUNPowerSupply(channel_count=self.channel_count)
 
         self._tcp_invoke_lock = threading.Lock()
@@ -62,11 +68,12 @@ class MUNPower(QtWidgets.QWidget):
         self._output_delay_index = 0
         self.OUTPUT_CHANNEL_DELAY_MS = 4000
 
+        self.plot_thread = threading.Thread(target=self.plot_callback)
+
         self._build_ui()
         self.load_limit_config()
         self._bind_signals()
 
-        self.plot_thread = threading.Thread(target=self.plot_callback)
         self.instances.append(self)
         self.refresh_connection_options(show_message=False)
 
@@ -150,6 +157,16 @@ class MUNPower(QtWidgets.QWidget):
         listen_row.addWidget(self.start_listen)
         listen_row.addWidget(self.stop_listen)
         tab_layout.addLayout(listen_row)
+
+        sample_rate_row = QtWidgets.QHBoxLayout()
+        sample_rate_row.addWidget(QtWidgets.QLabel("采集精度(次/秒)", power_scroll_widget))
+        self.sample_rate_spin = QtWidgets.QSpinBox(power_scroll_widget)
+        self.sample_rate_spin.setRange(MIN_SAMPLE_RATE_HZ, MAX_SAMPLE_RATE_HZ)
+        self.sample_rate_spin.setValue(DEFAULT_SAMPLE_RATE_HZ)
+        self.sample_rate_spin.setSuffix(" 次/秒")
+        sample_rate_row.addWidget(self.sample_rate_spin)
+        sample_rate_row.addStretch(1)
+        tab_layout.addLayout(sample_rate_row)
         tab_layout.addStretch(1)
 
         self.tabWidget.addTab(power_tab, "电源")
@@ -178,7 +195,7 @@ class MUNPower(QtWidgets.QWidget):
             self._append_channel_ui(channel)
 
         self.refresh_channel_names(use_live_values=False)
-        self.btn_Control(False, False, False, False)
+        self._refresh_control_buttons()
 
     def _build_set_group(self, parent):
         group = QtWidgets.QGroupBox("参数设置 / 保护阈值", parent)
@@ -187,8 +204,10 @@ class MUNPower(QtWidgets.QWidget):
         self.set_group_layout = layout
         self.sendALL = QtWidgets.QPushButton("发送全部数据", group)
         self.add_channel_btn = QtWidgets.QPushButton("增加通道", group)
+        self.delete_channel_btn = QtWidgets.QPushButton("删除通道", group)
         layout.addWidget(self.sendALL, 0, 0, 1, 2)
         layout.addWidget(self.add_channel_btn, 0, 2)
+        layout.addWidget(self.delete_channel_btn, 0, 3)
         return group
 
     def _build_check_group(self, parent):
@@ -207,16 +226,19 @@ class MUNPower(QtWidgets.QWidget):
         self.sendALL.clicked.connect(self.sendALLData)
         self.checkALL.clicked.connect(self.checkALLData)
         self.add_channel_btn.clicked.connect(self.add_channel)
+        self.delete_channel_btn.clicked.connect(self.delete_channel)
         self.start_btn.clicked.connect(self.output_open)
         self.stop_btn.clicked.connect(self.output_close)
         self.start_listen.clicked.connect(self.start_plot)
         self.stop_listen.clicked.connect(self.close_plot)
+        self.sample_rate_spin.valueChanged.connect(self.set_sample_rate)
 
         for channel in range(1, self.channel_count + 1):
             self._bind_channel_signals(channel)
 
         self.sigInfo.connect(self.show_msg)
         self.plot_update_signal.connect(self._on_plot_update)
+        self.plot_finished_signal.connect(self._refresh_control_buttons)
         self._tcp_invoke_signal.connect(self._on_tcp_invoke)
         self._signals_bound = True
 
@@ -227,7 +249,7 @@ class MUNPower(QtWidgets.QWidget):
         self._reposition_group_buttons()
 
     def _append_set_channel_ui(self, channel):
-        base_row = (channel - 1) * 4
+        base_row = (channel - 1) * CHANNEL_ROW_COUNT
         voltage_input = QtWidgets.QLineEdit(self.sendALL.parent())
         current_input = QtWidgets.QLineEdit(self.sendALL.parent())
         voltage_limit_input = QtWidgets.QLineEdit(self.sendALL.parent())
@@ -242,29 +264,34 @@ class MUNPower(QtWidgets.QWidget):
         voltage_limit_send = QtWidgets.QPushButton("发送", self.sendALL.parent())
         limit_send = QtWidgets.QPushButton("发送", self.sendALL.parent())
 
-        self.set_group_layout.addWidget(QtWidgets.QLabel(f"CH{channel} 电压(V)", self.sendALL.parent()), base_row, 0)
+        ch_output_btn = QtWidgets.QPushButton(f"CH{channel} 输出开", self.sendALL.parent())
+        ch_output_btn.setCheckable(True)
+        ch_output_btn.setChecked(False)
+
+        v_label = QtWidgets.QLabel(f"CH{channel} 电压(V)", self.sendALL.parent())
+        c_label = QtWidgets.QLabel(f"CH{channel} 电流(A)", self.sendALL.parent())
+        v_limit_label = QtWidgets.QLabel(f"CH{channel} 硬件保护电压阈值(V)", self.sendALL.parent())
+        c_limit_label = QtWidgets.QLabel(f"CH{channel} 硬件保护电流阈值(A)", self.sendALL.parent())
+        ch_out_label = QtWidgets.QLabel(f"CH{channel} 通道输出", self.sendALL.parent())
+
+        self.set_group_layout.addWidget(v_label, base_row, 0)
         self.set_group_layout.addWidget(voltage_input, base_row, 1)
         self.set_group_layout.addWidget(voltage_send, base_row, 2)
 
-        self.set_group_layout.addWidget(QtWidgets.QLabel(f"CH{channel} 电流(A)", self.sendALL.parent()), base_row + 1, 0)
+        self.set_group_layout.addWidget(c_label, base_row + 1, 0)
         self.set_group_layout.addWidget(current_input, base_row + 1, 1)
         self.set_group_layout.addWidget(current_send, base_row + 1, 2)
 
-        self.set_group_layout.addWidget(
-            QtWidgets.QLabel(f"CH{channel} 硬件保护电压阈值(V)", self.sendALL.parent()),
-            base_row + 2,
-            0,
-        )
+        self.set_group_layout.addWidget(v_limit_label, base_row + 2, 0)
         self.set_group_layout.addWidget(voltage_limit_input, base_row + 2, 1)
         self.set_group_layout.addWidget(voltage_limit_send, base_row + 2, 2)
 
-        self.set_group_layout.addWidget(
-            QtWidgets.QLabel(f"CH{channel} 硬件保护电流阈值(A)", self.sendALL.parent()),
-            base_row + 3,
-            0,
-        )
+        self.set_group_layout.addWidget(c_limit_label, base_row + 3, 0)
         self.set_group_layout.addWidget(limit_input, base_row + 3, 1)
         self.set_group_layout.addWidget(limit_send, base_row + 3, 2)
+
+        self.set_group_layout.addWidget(ch_out_label, base_row + 4, 0)
+        self.set_group_layout.addWidget(ch_output_btn, base_row + 4, 1, 1, 2)
 
         self.channel_inputs[channel] = {
             "voltage": voltage_input,
@@ -275,10 +302,26 @@ class MUNPower(QtWidgets.QWidget):
             "current_send": current_send,
             "voltage_limit_send": voltage_limit_send,
             "limit_send": limit_send,
+            "output_btn": ch_output_btn,
         }
 
+        self._register_channel_widget(channel, v_label)
+        self._register_channel_widget(channel, voltage_input)
+        self._register_channel_widget(channel, voltage_send)
+        self._register_channel_widget(channel, c_label)
+        self._register_channel_widget(channel, current_input)
+        self._register_channel_widget(channel, current_send)
+        self._register_channel_widget(channel, v_limit_label)
+        self._register_channel_widget(channel, voltage_limit_input)
+        self._register_channel_widget(channel, voltage_limit_send)
+        self._register_channel_widget(channel, c_limit_label)
+        self._register_channel_widget(channel, limit_input)
+        self._register_channel_widget(channel, limit_send)
+        self._register_channel_widget(channel, ch_out_label)
+        self._register_channel_widget(channel, ch_output_btn)
+
     def _append_check_channel_ui(self, channel):
-        base_row = (channel - 1) * 4
+        base_row = (channel - 1) * CHANNEL_ROW_COUNT
         voltage_print = self._create_display_edit(self.checkALL.parent())
         current_print = self._create_display_edit(self.checkALL.parent())
         voltage_limit_print = self._create_display_edit(self.checkALL.parent())
@@ -308,26 +351,39 @@ class MUNPower(QtWidgets.QWidget):
             "limit_check": limit_check,
         }
 
+        self._register_channel_widget(channel, voltage_print)
+        self._register_channel_widget(channel, voltage_check)
+        self._register_channel_widget(channel, current_print)
+        self._register_channel_widget(channel, current_check)
+        self._register_channel_widget(channel, voltage_limit_print)
+        self._register_channel_widget(channel, voltage_limit_check)
+        self._register_channel_widget(channel, limit_print)
+        self._register_channel_widget(channel, limit_check)
+
     def _append_plot_channel_ui(self, channel):
         name_edit = QtWidgets.QLineEdit(f"CH{channel}", self.plot_widget)
         name_edit.setReadOnly(True)
         plot = MyPlot(
             dataDict={PLOT_VOLTAGE_KEY: [], PLOT_CURRENT_KEY: []},
-            dataLen=POINT_NUM,
+            dataLen=self._get_plot_point_num(),
         )
         insert_index = max(self.plot_layout.count() - 1, 0)
         self.plot_layout.insertWidget(insert_index, name_edit)
         self.plot_layout.insertWidget(insert_index + 1, plot)
         self.channel_name_edits[channel] = name_edit
         self.channel_plots[channel] = plot
+        self._register_channel_widget(channel, name_edit)
+        self._register_channel_widget(channel, plot)
 
     def _reposition_group_buttons(self):
-        action_row = self.channel_count * 4
+        action_row = self.channel_count * CHANNEL_ROW_COUNT
         self.set_group_layout.removeWidget(self.sendALL)
         self.set_group_layout.removeWidget(self.add_channel_btn)
+        self.set_group_layout.removeWidget(self.delete_channel_btn)
         self.check_group_layout.removeWidget(self.checkALL)
         self.set_group_layout.addWidget(self.sendALL, action_row, 0, 1, 2)
         self.set_group_layout.addWidget(self.add_channel_btn, action_row, 2)
+        self.set_group_layout.addWidget(self.delete_channel_btn, action_row, 3)
         self.check_group_layout.addWidget(self.checkALL, action_row, 0, 1, 3)
 
     def _bind_channel_signals(self, channel):
@@ -342,6 +398,9 @@ class MUNPower(QtWidgets.QWidget):
         )
         self.channel_inputs[channel]["limit_send"].clicked.connect(
             lambda checked=False, ch=channel: self.limit_set(ch)
+        )
+        self.channel_inputs[channel]["output_btn"].clicked.connect(
+            lambda checked=False, ch=channel: self.set_channel_output(ch, not self.channel_output_states.get(ch, False))
         )
         self.channel_outputs[channel]["voltage_check"].clicked.connect(
             lambda checked=False, ch=channel: self.V_get(ch)
@@ -416,11 +475,50 @@ class MUNPower(QtWidgets.QWidget):
     def _visible_channels(self):
         return range(1, self.channel_count + 1)
 
+    def _register_channel_widget(self, channel, widget):
+        self.channel_ui_widgets.setdefault(channel, []).append(widget)
+
+    def _refresh_control_buttons(self):
+        connected = self.isConnected
+        collecting = self.plot_thread.is_alive()
+        output_on = any(self.channel_output_states.get(ch, False) for ch in self._visible_channels())
+        self.isOutput = output_on
+
+        self.start_btn.setEnabled(connected and not output_on)
+        self.stop_btn.setEnabled(connected and output_on)
+        self.start_listen.setEnabled(connected and not collecting)
+        self.stop_listen.setEnabled(connected and collecting)
+
+        can_edit_channels = not output_on and not collecting
+        self.add_channel_btn.setEnabled(can_edit_channels and self.channel_count < MAX_MUN_CHANNELS)
+        self.delete_channel_btn.setEnabled(can_edit_channels and self.channel_count > 2)
+
+        for channel in self._visible_channels():
+            if channel in self.channel_inputs and "output_btn" in self.channel_inputs[channel]:
+                btn = self.channel_inputs[channel]["output_btn"]
+                btn.setEnabled(connected)
+                ch_state = self.channel_output_states.get(channel, False)
+                btn.setChecked(ch_state)
+                btn.setText(f"CH{channel} 输出{'关' if ch_state else '开'}")
+
+    def _sync_output_state(self):
+        self.isOutput = any(self.channel_output_states.get(ch, False) for ch in self._visible_channels())
+        self._refresh_control_buttons()
+
+    def _get_plot_point_num(self):
+        return max(1, int(self.sample_rate_hz * TOTAL_SEC))
+
+    def _refresh_plot_data_len(self):
+        data_len = self._get_plot_point_num()
+        for plot in self.channel_plots.values():
+            plot.dataLen = data_len
+
     def export_limit_settings(self):
         settings = {}
         for channel in self._visible_channels():
             settings[f"voltage_{channel}"] = f"{self._get_voltage_limit_value(channel):.3f}"
             settings[f"current_{channel}"] = f"{self._get_current_limit_value(channel):.3f}"
+        settings["sample_rate_hz"] = str(self.sample_rate_hz)
         return settings
 
     def _set_voltage_limit_value(self, channel, value, update_input=True):
@@ -521,6 +619,19 @@ class MUNPower(QtWidgets.QWidget):
             self._set_voltage_limit_value(channel, voltage_value)
             self._set_limit_value(channel, current_value)
 
+        if config.has_section(section_name):
+            try:
+                self.sample_rate_hz = max(
+                    MIN_SAMPLE_RATE_HZ,
+                    min(MAX_SAMPLE_RATE_HZ, int(config.get(section_name, "sample_rate_hz", fallback=str(DEFAULT_SAMPLE_RATE_HZ)))),
+                )
+            except Exception:
+                self.sample_rate_hz = DEFAULT_SAMPLE_RATE_HZ
+        if hasattr(self, "sample_rate_spin") and self.sample_rate_spin is not None:
+            self.sample_rate_spin.blockSignals(True)
+            self.sample_rate_spin.setValue(self.sample_rate_hz)
+            self.sample_rate_spin.blockSignals(False)
+
     def persist_limit_config(self):
         config = configparser.ConfigParser()
         config.read(self._get_limit_config_path(), encoding="utf-8")
@@ -568,7 +679,7 @@ class MUNPower(QtWidgets.QWidget):
                     pass
                 self.mun = restored_driver if restore_ok else new_driver
                 self.isConnected = restore_ok
-                self.sigInfo.emit(f"閫氶亾缁撴瀯鏇存柊澶辫触锛岄噸鏂拌繛鎺ヨ澶囧け璐ワ細{e}")
+                self.sigInfo.emit(f"通道结构更新失败，重新连接设备失败：{e}")
                 return False
 
         self.mun = new_driver
@@ -587,6 +698,11 @@ class MUNPower(QtWidgets.QWidget):
         finally:
             self.mun.channel_count = original_count
 
+    def set_sample_rate(self, value):
+        self.sample_rate_hz = max(MIN_SAMPLE_RATE_HZ, min(MAX_SAMPLE_RATE_HZ, int(value)))
+        self._refresh_plot_data_len()
+        self.persist_limit_config()
+
     def _stop_output_delay_timer(self):
         timer = getattr(self, "_output_delay_timer", None)
         self._output_delay_timer = None
@@ -604,7 +720,6 @@ class MUNPower(QtWidgets.QWidget):
     def _start_sequential_output(self):
         """Enable visible channels one by one without blocking the UI."""
         self._stop_output_delay_timer()
-        self._best_effort_disable_hidden_channels()
         self._output_delay_channels = list(self._visible_channels())
         self._output_delay_index = 0
 
@@ -627,6 +742,7 @@ class MUNPower(QtWidgets.QWidget):
         channel = self._output_delay_channels[self._output_delay_index]
         try:
             self.mun.enableOutput(True, channel)
+            self.channel_output_states[channel] = True
             self.sigInfo.emit(f"CH{channel} 已开启输出")
         except Exception as e:
             self.sigInfo.emit(f"CH{channel} 开启输出失败: {e}")
@@ -634,16 +750,30 @@ class MUNPower(QtWidgets.QWidget):
         self._output_delay_index += 1
         if self._output_delay_index >= len(self._output_delay_channels):
             self._stop_output_delay_timer()
+            self._sync_output_state()
 
     def _set_visible_outputs(self, enable):
         if enable:
+            for ch in self._visible_channels():
+                try:
+                    self.mun.enableOutput(False, ch)
+                except Exception:
+                    pass
+                self.channel_output_states[ch] = False
+            self._best_effort_disable_hidden_channels()
+            self.mun.enableOutput(True)
             self._start_sequential_output()
             return
 
         self._stop_output_delay_timer()
-        for channel in self._visible_channels():
-            self.mun.enableOutput(False, channel)
         self.mun.enableOutput(False)
+        for channel in self._visible_channels():
+            try:
+                self.mun.enableOutput(False, channel)
+            except Exception:
+                pass
+            self.channel_output_states[channel] = False
+        self._best_effort_disable_hidden_channels()
 
     def add_channel(self):
         if self.isOutput:
@@ -658,11 +788,12 @@ class MUNPower(QtWidgets.QWidget):
 
         new_channel = self.channel_count + 1
         if not self._rebuild_driver(new_channel):
-            QtWidgets.QMessageBox.warning(self, "鎻愮ず", "澧炲姞閫氶亾澶辫触锛岃妫€鏌ヨ澶囪繛鎺ュ悗閲嶈瘯")
+            QtWidgets.QMessageBox.warning(self, "提示", "增加通道失败，请检查设备连接后重试")
             return
         self.CurrentValues[new_channel] = [0.0, 0.0]
         self.voltage_limits[new_channel] = DEFAULT_VOLTAGE_LIMIT
         self.current_limits[new_channel] = DEFAULT_CURRENT_LIMIT
+        self.channel_output_states[new_channel] = False
         self.channel_count = new_channel
 
         self._append_channel_ui(new_channel)
@@ -671,8 +802,112 @@ class MUNPower(QtWidgets.QWidget):
 
         self.persist_limit_config()
         self.refresh_channel_names(use_live_values=self.isConnected)
+        self._refresh_control_buttons()
         self.structure_changed.emit()
         self.sigInfo.emit(f"已增加 CH{new_channel}，当前共 {self.channel_count} 个通道")
+
+    def delete_channel(self):
+        if self.isOutput:
+            QtWidgets.QMessageBox.warning(self, "提示", "输出开启时不能删除通道")
+            return
+        if self.plot_thread.is_alive():
+            QtWidgets.QMessageBox.warning(self, "提示", "采集开启时不能删除通道")
+            return
+        if self.channel_count <= 2:
+            QtWidgets.QMessageBox.warning(self, "提示", "至少保留 2 个通道")
+            return
+
+        channel = self.channel_count
+        if self.isConnected:
+            try:
+                self.mun.enableOutput(False, channel)
+            except Exception:
+                pass
+
+        widgets = self.channel_ui_widgets.get(channel, [])
+        for widget in widgets:
+            parent_layout = None
+            if hasattr(widget, "parent") and widget.parent():
+                parent = widget.parent()
+                if hasattr(parent, "layout") and parent.layout():
+                    layout = parent.layout()
+                    if isinstance(layout, QtWidgets.QGridLayout):
+                        parent_layout = layout
+            if parent_layout is not None:
+                try:
+                    parent_layout.removeWidget(widget)
+                except Exception:
+                    pass
+            try:
+                widget.deleteLater()
+            except Exception:
+                pass
+            try:
+                widget.setParent(None)
+            except Exception:
+                pass
+
+        self.channel_ui_widgets.pop(channel, None)
+        self.channel_inputs.pop(channel, None)
+        self.channel_outputs.pop(channel, None)
+        self.channel_name_edits.pop(channel, None)
+        self.channel_plots.pop(channel, None)
+        self.CurrentValues.pop(channel, None)
+        self.voltage_limits.pop(channel, None)
+        self.current_limits.pop(channel, None)
+        self.channel_output_states.pop(channel, None)
+
+        self.channel_count -= 1
+
+        if self.isConnected:
+            self._best_effort_disable_hidden_channels()
+
+        self._rebuild_driver(self.channel_count)
+        self._reposition_group_buttons()
+        self.persist_limit_config()
+        self.refresh_channel_names(use_live_values=self.isConnected)
+        self._refresh_control_buttons()
+        self.structure_changed.emit()
+        self.sigInfo.emit(f"已删除 CH{channel}，当前共 {self.channel_count} 个通道")
+
+    def set_channel_output(self, channel, enable):
+        if not self.isConnected:
+            self.sigInfo.emit("请先连接电源")
+            self._refresh_control_buttons()
+            return [False, "Device not connected"]
+
+        channel = int(channel)
+        if channel not in self._visible_channels():
+            self._refresh_control_buttons()
+            return [False, f"Invalid channel: {channel}"]
+
+        if enable:
+            self.V_set(channel)
+            self.I_set(channel)
+            self.voltage_limit_set(channel)
+            self.limit_set(channel)
+
+            if not self.isOutput:
+                for ch in self._visible_channels():
+                    if ch != channel:
+                        try:
+                            self.mun.enableOutput(False, ch)
+                        except Exception:
+                            pass
+                self._best_effort_disable_hidden_channels()
+            self.mun.enableOutput(True, channel)
+            self.mun.enableOutput(True)
+            self.channel_output_states[channel] = True
+            self.sigInfo.emit(f"CH{channel} 已开启输出")
+        else:
+            self.mun.enableOutput(False, channel)
+            self.channel_output_states[channel] = False
+            if not any(self.channel_output_states.get(ch, False) for ch in self._visible_channels()):
+                self.mun.enableOutput(False)
+            self.sigInfo.emit(f"CH{channel} 已关闭输出")
+
+        self._sync_output_state()
+        return [True, ""]
 
     def _on_plot_update(self, channel, data):
         self.channel_plots[channel].updateData(data)
@@ -728,7 +963,7 @@ class MUNPower(QtWidgets.QWidget):
             self.isConnected = True
             self.refresh_channel_names()
             self.sigInfo.emit(f"已连接{resource_name}")
-            self.btn_Control(True, False, False, False)
+            self._refresh_control_buttons()
             return [True, self.powername.text()]
         except Exception as e:
             try:
@@ -753,7 +988,9 @@ class MUNPower(QtWidgets.QWidget):
             self.sigInfo.emit(f"已断开{self.portchoose.currentText()}")
             self.isConnected = False
             self.isOutput = False
-            self.btn_Control(False, False, False, False)
+            for ch in self._visible_channels():
+                self.channel_output_states[ch] = False
+            self._refresh_control_buttons()
 
     def V_set(self, channel, voltage=None):
         if voltage is None:
@@ -866,9 +1103,9 @@ class MUNPower(QtWidgets.QWidget):
         self._set_visible_outputs(True)
         time.sleep(0.3)
         self.sigInfo.emit("已打开电源输出")
-        self.isOutput = True
-        self.btn_Control(False, True, False, True)
-        self.start_plot()
+        self._sync_output_state()
+        if not self.plot_thread.is_alive():
+            self.start_plot()
 
     def output_close(self):
         if not self.isConnected:
@@ -876,18 +1113,14 @@ class MUNPower(QtWidgets.QWidget):
             return
         if not self.isOutput:
             self.sigInfo.emit("电源输出已关闭")
-            self.btn_Control(True, False, False, False)
+            self._refresh_control_buttons()
             return
 
         try:
             self._set_visible_outputs(False)
         finally:
             self.sigInfo.emit("已关闭电源输出")
-            self.isOutput = False
-            if self.plot_thread.is_alive():
-                self.StopFlag = True
-                self.plot_thread.join()
-            self.btn_Control(True, False, False, False)
+            self._sync_output_state()
 
     def plot_callback(self):
         channels = {
@@ -895,61 +1128,72 @@ class MUNPower(QtWidgets.QWidget):
             for channel in self._visible_channels()
         }
         fail_count = 0
+        next_tick = time.monotonic()
 
-        while not self.StopFlag:
-            try:
-                values = self.mun.getOutput()
-                fail_count = 0
+        try:
+            while not self.StopFlag:
+                try:
+                    rate = max(MIN_SAMPLE_RATE_HZ, min(MAX_SAMPLE_RATE_HZ, int(self.sample_rate_hz)))
+                    interval = 1.0 / float(rate)
+                    next_tick += interval
 
-                for index, channel in enumerate(self._visible_channels()):
-                    voltage, current = values[index]
-                    channels[channel][PLOT_VOLTAGE_KEY] = voltage
-                    channels[channel][PLOT_CURRENT_KEY] = current
-                    self.CurrentValues[channel] = [voltage, current]
+                    values = self.mun.getOutput()
+                    fail_count = 0
 
-                    self.plot_update_signal.emit(channel, dict(channels[channel]))
+                    for index, channel in enumerate(self._visible_channels()):
+                        voltage, current = values[index]
+                        channels[channel][PLOT_VOLTAGE_KEY] = voltage
+                        channels[channel][PLOT_CURRENT_KEY] = current
+                        self.CurrentValues[channel] = [voltage, current]
 
-                    voltage_limit = self._get_voltage_limit_value(channel)
-                    if voltage_limit > 0 and voltage >= voltage_limit:
-                        try:
-                            self._set_visible_outputs(False)
-                        except Exception:
-                            pass
-                        self.StopFlag = True
-                        self.isOutput = False
-                        self.voltage_warn.emit(self.name, f"CH{channel}", f"{voltage:.3f}")
-                        self.sigInfo.emit(
-                            f"CH{channel}电压达到保护阈值 {voltage_limit:.3f}V，已停止输出"
-                        )
+                        self.plot_update_signal.emit(channel, dict(channels[channel]))
+
+                        if self.channel_output_states.get(channel, False):
+                            voltage_limit = self._get_voltage_limit_value(channel)
+                            if voltage_limit > 0 and voltage >= voltage_limit:
+                                try:
+                                    self._set_visible_outputs(False)
+                                except Exception:
+                                    pass
+                                self.StopFlag = True
+                                self.voltage_warn.emit(self.name, f"CH{channel}", f"{voltage:.3f}")
+                                self.sigInfo.emit(
+                                    f"CH{channel}电压达到保护阈值 {voltage_limit:.3f}V，已停止输出"
+                                )
+                                break
+
+                            current_limit = self._get_current_limit_value(channel)
+                            if current_limit > 0 and current >= current_limit:
+                                try:
+                                    self._set_visible_outputs(False)
+                                except Exception:
+                                    pass
+                                self.StopFlag = True
+                                self.current_warn.emit(self.name, f"CH{channel}", f"{current:.3f}")
+                                self.sigInfo.emit(
+                                    f"CH{channel}电流达到保护阈值 {current_limit:.3f}A，已停止输出"
+                                )
+                                break
+
+                    if self.StopFlag:
                         break
 
-                    current_limit = self._get_current_limit_value(channel)
-                    if current_limit > 0 and current >= current_limit:
-                        try:
-                            self._set_visible_outputs(False)
-                        except Exception:
-                            pass
+                    self._append_csv(channels)
+                    sleep_seconds = next_tick - time.monotonic()
+                    if sleep_seconds > 0:
+                        time.sleep(sleep_seconds)
+                    else:
+                        next_tick = time.monotonic()
+                except Exception as e:
+                    fail_count += 1
+                    self.sigInfo.emit(f"采集数据异常({fail_count}/{MAX_PLOT_FAILURES}): {e}")
+                    if fail_count >= MAX_PLOT_FAILURES:
+                        self.sigInfo.emit("通信连续异常，已自动停止采集")
                         self.StopFlag = True
-                        self.isOutput = False
-                        self.current_warn.emit(self.name, f"CH{channel}", f"{current:.3f}")
-                        self.sigInfo.emit(
-                            f"CH{channel}电流达到保护阈值 {current_limit:.3f}A，已停止输出"
-                        )
                         break
-
-                if self.StopFlag:
-                    break
-
-                self._append_csv(channels)
-                time.sleep(0.1)
-            except Exception as e:
-                fail_count += 1
-                self.sigInfo.emit(f"采集数据异常({fail_count}/{MAX_PLOT_FAILURES}): {e}")
-                if fail_count >= MAX_PLOT_FAILURES:
-                    self.sigInfo.emit("通信连续异常，已自动停止采集")
-                    self.StopFlag = True
-                    break
-                time.sleep(1)
+                    time.sleep(1)
+        finally:
+            self.plot_finished_signal.emit()
 
     def _append_csv(self, channels):
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -971,6 +1215,11 @@ class MUNPower(QtWidgets.QWidget):
             f.write(",".join(row) + "\n")
 
     def start_plot(self):
+        if not self.isConnected:
+            self.sigInfo.emit("请先连接电源")
+            self._refresh_control_buttons()
+            return
+
         self.StopFlag = False
         if not self.plot_thread.is_alive():
             self.start_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")[:-3]
@@ -979,16 +1228,19 @@ class MUNPower(QtWidgets.QWidget):
             self.sigInfo.emit("已开启采集")
         else:
             self.sigInfo.emit("采集已开启")
-        self.btn_Control(False if self.isOutput else True, True if self.isOutput else False, False, True)
+        self._refresh_control_buttons()
 
     def close_plot(self):
         self.StopFlag = True
         if self.plot_thread.is_alive():
-            self.plot_thread.join()
-            self.sigInfo.emit("已关闭采集")
+            self.plot_thread.join(timeout=2.0)
+            if self.plot_thread.is_alive():
+                self.sigInfo.emit("采集线程停止超时，请稍后重试")
+            else:
+                self.sigInfo.emit("已关闭采集")
         else:
             self.sigInfo.emit("采集已关闭")
-        self.btn_Control(True, self.isOutput, True, False)
+        self._refresh_control_buttons()
 
     def checkplot(self):
         return self.plot_thread.is_alive()
@@ -1019,6 +1271,9 @@ class MUNPower(QtWidgets.QWidget):
 
     def invoke_tcp_set_current(self, channel, current):
         return self._invoke_in_main_thread(lambda: self._tcp_set_current(channel, current))
+
+    def invoke_tcp_set_channel_output(self, channel, enable):
+        return self._invoke_in_main_thread(lambda: self.set_channel_output(channel, enable))
 
     def invoke_tcp_get_value(self):
         return self._invoke_in_main_thread(self._tcp_get_value)

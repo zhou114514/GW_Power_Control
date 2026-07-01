@@ -223,6 +223,20 @@ class TCPServer(QThread):
         result = device.invoke_tcp_set_current(channel, current)
         return self.make_backpack(result[0], None, result[1] if len(result) > 1 else None)
 
+    def _set_channel_output(self, params):
+        _, device = self._resolve_device(params)
+        device_type = str(params.get("DeviceType", "")).upper()
+        if device_type != DEVICE_TYPE_MU_N:
+            return self.make_backpack(False, None, "SetChannelOutput only supports MU_N")
+
+        if not params or "Channel" not in params:
+            return self.make_backpack(False, None, "Missing parameter: Channel")
+
+        channel = int(params["Channel"])
+        enable = bool(params.get("Enable", True))
+        result = device.invoke_tcp_set_channel_output(channel, enable)
+        return self.make_backpack(result[0], None, result[1] if len(result) > 1 else None)
+
     def _list_devices(self, params):
         value = {
             DEVICE_TYPE_PSW: [
@@ -266,6 +280,7 @@ class TCPServer(QThread):
                 "DownDeflection": self._down_deflection,
                 "SetVoltage": self._set_voltage,
                 "SetCurrent": self._set_current,
+                "SetChannelOutput": self._set_channel_output,
             }
 
             if opcode not in handlers:
