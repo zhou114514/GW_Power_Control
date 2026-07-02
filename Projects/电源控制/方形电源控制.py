@@ -21,6 +21,7 @@ from bitstring import *
 # from Utility.Datebase.Database import DataBase
 # from Utility.Function.FuncMng import FuncMng
 from .方形电源_UI import Ui_Form
+from PyQt5.QtCore import pyqtSignal
 
 import re
 import pandas as pd
@@ -47,11 +48,13 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     channel1_signal = pyqtSignal(dict)
     channel2_signal = pyqtSignal(dict)
     dataUpSignal = pyqtSignal(str)
+    _tcp_invoke_signal = pyqtSignal()
 
-    def __init__(self, name, device_id=None, ch1_voltage=5.0, ch1_current=1.0, ch2_voltage=12.0, ch2_current=0.5):
+    def __init__(self, name, device_id=None, ch1_voltage=5.0, ch1_current=1.0, ch2_voltage=12.0, ch2_current=0.5, remote_enabled=False):
         super(SquarePower,self).__init__()
         self.name = name
         self.device_id = device_id
+        self.remote_enabled = remote_enabled
         self.instances.append(self)
         if device_id:
             Tool.register_power_device(device_id, self)
@@ -67,6 +70,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.ch2_safty = 100
         self.start_time = None
         self.GPD = GPD3303S()
+        self._tracking_mode = 'independent'  # 缓存追踪模式：independent/series/parallel
 
 
         self.VsetCol = [self.line, self.CH1_V, self.CH2_V]
@@ -124,6 +128,101 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
 
         Tool.port_check(self.portchoose, type="square")
 
+        # TCP线程安全调用机制：确保串口操作在Qt主线程中执行
+        self._tcp_invoke_lock = threading.Lock()
+        self._tcp_op_event = threading.Event()
+        self._tcp_op_func = None
+        self._tcp_op_result = None
+        self._tcp_invoke_signal.connect(self._on_tcp_invoke)
+
+    def _on_tcp_invoke(self):
+        """槽函数：在Qt主线程中执行TCP请求的操作"""
+        if self._tcp_op_func:
+            try:
+                self._tcp_op_result = self._tcp_op_func()
+            except Exception as e:
+                self._tcp_op_result = [False, str(e)]
+            self._tcp_op_event.set()
+
+    def _invoke_in_main_thread(self, func, timeout=30):
+        """从后台线程安全调用需要在主线程执行的函数，阻塞等待结果"""
+        with self._tcp_invoke_lock:
+            self._tcp_op_event.clear()
+            self._tcp_op_func = func
+            self._tcp_invoke_signal.emit()
+            if self._tcp_op_event.wait(timeout=timeout):
+                return self._tcp_op_result
+            return [False, "Operation timed out"]
+
+    def invoke_tcp_power_on(self):
+        return self._invoke_in_main_thread(self.output_open_tcp)
+
+    def invoke_tcp_power_off(self):
+        return self._invoke_in_main_thread(self.output_close_tcp)
+
+    def output_open_tcp(self):
+        """供后台线程调用的上电接口（注入预设参数后上电，无确认弹窗）"""
+        if not self.isConnected:
+            return [False, "Port not connected"]
+        self.sendALLData()
+        self.GPD.enableOutput()
+        self.sigInfo.emit(f"已打开电源输出")
+        time.sleep(1)
+        self.isOutput = True
+        self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3] if self.start_time is None else self.start_time
+        self.start_plot()
+        return [True, ""]
+
+    def output_close_tcp(self):
+        """供后台线程调用的下电接口"""
+        if self.plot_thread.is_alive():
+            self.StopFlag = True
+            self.plot_thread.join()
+        self.GPD.enableOutput(False)
+        self.sigInfo.emit(f"已关闭电源输出")
+        self.isOutput = False
+        self.ch1_currentV = 0
+        self.ch2_currentV = 0
+        self.ch1_currentI = 0
+        self.ch2_currentI = 0
+        self.start_time = None
+        return [True, ""]
+
+    _TRACKING_MODE_NAMES = {
+        'independent': '独立',
+        'series': '串联',
+        'parallel': '并联',
+    }
+
+    def _refresh_tracking_mode(self):
+        """读取并缓存电源追踪模式，更新界面提示。未连接时静默跳过。"""
+        if not self.isConnected:
+            return
+        try:
+            self._tracking_mode = self.GPD.getTrackingMode()
+            mode_str = self._TRACKING_MODE_NAMES.get(self._tracking_mode, self._tracking_mode)
+            self.sigInfo.emit(f"追踪模式：{mode_str}")
+            if self._tracking_mode != 'independent':
+                self.sigInfo.emit("注意：非独立模式 — CH2设置将自动跟随CH1")
+                self.CH2_name.setText("CH2（非独立=CH1）")
+            else:
+                # 恢复 CH2 标签
+                try:
+                    ch2_v = self.GPD.getVoltage(2)
+                    self.CH2_name.setText(f"CH2：{ch2_v}V")
+                except Exception:
+                    pass
+        except Exception as e:
+            self.sigInfo.emit(f"读取追踪模式失败：{e}")
+            self._tracking_mode = 'independent'
+
+    def _effective_ch(self, ch):
+        """并联模式下将 CH2 请求重定向至 CH1，同时记录日志。"""
+        if self._tracking_mode != 'independent' and ch == 2:
+            self.sigInfo.emit("非独立模式：CH2指令自动重定向至CH1")
+            return 1
+        return ch
+
     def power_port_open(self):
         try:
             # 连接电源
@@ -136,6 +235,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
             self.sigInfo.emit(f"已连接{self.portchoose.currentText()}")
             self.isConnected = True
             Tool.save_device_port(self.device_id, self.portchoose.currentText())
+            self._refresh_tracking_mode()
             QMessageBox.information(self, "提示", f"已连接{self.portchoose.currentText()}！\nCH1：{ch1_v}V\nCH2：{ch2_v}V")
         except Exception as e:
             QMessageBox.warning(self, "错误", f"连接{self.portchoose.currentText()}失败，请检查端口是否正确！")
@@ -149,39 +249,60 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
 
     
     def V_set(self, ch, voltage=None):
-        # 设置电压
+        # 设置电压（并联模式下 CH2 自动重定向至 CH1）
         if voltage is None:
             value = self.VsetCol[ch].text()
             if value == "":
                 return
             voltage = float(value)
-        self.GPD.setVoltage(ch, voltage)
-        self.sigInfo.emit(f"已设置{ch}通道电压为{voltage}")
+        actual_ch = self._effective_ch(ch)
+        self.GPD.setVoltage(actual_ch, voltage)
+        self.sigInfo.emit(f"已设置CH{ch}电压为{voltage}")
+        # 非独立模式：同步 CH1/CH2 输入框显示
+        if self._tracking_mode != 'independent':
+            self.VsetCol[1].setText(str(voltage))
+            self.VsetCol[2].setText(str(voltage))
 
-    
     def I_set(self, ch, current=None):
-        # 设置电流
+        # 设置电流（并联模式下 CH2 自动重定向至 CH1）
         if current is None:
             value = self.IsetCol[ch].text()
             if value == "":
                 return
             current = float(value)
-        self.GPD.setCurrent(ch, current)
-        self.sigInfo.emit(f"已设置{ch}通道电流为{current}")
-
+        actual_ch = self._effective_ch(ch)
+        self.GPD.setCurrent(actual_ch, current)
+        self.sigInfo.emit(f"已设置CH{ch}电流为{current}")
+        # 非独立模式：同步 CH1/CH2 输入框显示
+        if self._tracking_mode != 'independent':
+            self.IsetCol[1].setText(str(current))
+            self.IsetCol[2].setText(str(current))
 
     def sendALLData(self):
-        # 发送全部数据
-        for i in range(1,3):
-            value = self.VsetCol[i].text()
-            if value == "":
+        """发送全部预设参数。非独立模式下刷新追踪状态后只发送 CH1，CH2 自动跟随。"""
+        self._refresh_tracking_mode()
+        if self._tracking_mode != 'independent':
+            v_text = self.VsetCol[1].text()
+            i_text = self.IsetCol[1].text()
+            if v_text == "" or i_text == "":
                 return
-            self.V_set(i, float(value))
-            value = self.IsetCol[i].text()
-            if value == "":
-                return
-            self.I_set(i, float(value))
-        self.sigInfo.emit(f"已发送全部数据")
+            self.GPD.setVoltage(1, float(v_text))
+            self.GPD.setCurrent(1, float(i_text))
+            # 同步 CH2 输入框，使界面保持一致
+            self.VsetCol[2].setText(v_text)
+            self.IsetCol[2].setText(i_text)
+            self.sigInfo.emit(f"非独立模式：已设置CH1 {v_text}V/{i_text}A（CH2自动同步）")
+        else:
+            for ch in range(1, 3):
+                v_text = self.VsetCol[ch].text()
+                if v_text == "":
+                    return
+                self.V_set(ch, float(v_text))
+                i_text = self.IsetCol[ch].text()
+                if i_text == "":
+                    return
+                self.I_set(ch, float(i_text))
+            self.sigInfo.emit(f"已发送全部数据")
 
     def V_get(self, ch):
         # 获取电压
@@ -234,13 +355,16 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
 
     def output_open(self):
         # 打开输出
+        if not self.isConnected:
+            self.sigInfo.emit(f"请先连接电源")
+            return
+        self.sendALLData()
         self.GPD.enableOutput()
         self.sigInfo.emit(f"已打开电源输出")
         time.sleep(1)
         self.isOutput = True
         self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3] if self.start_time is None else self.start_time
         self.start_plot()
-        # self.start_plot()
 
 
     def output_close(self):

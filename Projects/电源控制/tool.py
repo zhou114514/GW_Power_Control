@@ -44,6 +44,8 @@ DEFAULT_POWER_CONFIG = {
             "remote": True,
         }
     ],
+    "power_on_sequence": [],
+    "power_off_sequence": [],
 }
 
 _power_device_registry = {}
@@ -106,13 +108,29 @@ class Tool():
         return os.path.exists(config_path)
 
     def check_power_config():
-        """检测电源 JSON 配置文件，不存在则创建默认配置"""
+        """检测电源 JSON 配置文件，不存在则创建默认配置，已存在则迁移缺失字段"""
         if not os.path.exists(POWER_CONFIG_PATH):
             default = copy.deepcopy(DEFAULT_POWER_CONFIG)
             default["scenario"] = "gxt_only"
             with open(POWER_CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(default, f, ensure_ascii=False, indent=2)
             return False
+        # 迁移：为旧配置文件补充缺失的序列字段
+        try:
+            with open(POWER_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            changed = False
+            if "power_on_sequence" not in cfg:
+                cfg["power_on_sequence"] = []
+                changed = True
+            if "power_off_sequence" not in cfg:
+                cfg["power_off_sequence"] = []
+                changed = True
+            if changed:
+                with open(POWER_CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
         return True
 
     def read_power_config_raw():
@@ -154,6 +172,35 @@ class Tool():
 
     def get_power_device(device_id):
         return _power_device_registry.get(str(device_id))
+
+    def has_power_devices():
+        """判断是否有任意已注册的电源实例"""
+        return len(_power_device_registry) > 0
+
+    def _normalize_id_list(raw):
+        """将序列列表标准化：展开含中文/英文逗号的合并字符串，去除空项。
+        
+        例：["LONG1，SQ2，SQ3"] → ["LONG1", "SQ2", "SQ3"]
+            ["GXT", "GF, SQ1"] → ["GXT", "GF", "SQ1"]
+        """
+        result = []
+        for item in raw:
+            for seg in str(item).replace('，', ',').split(','):
+                seg = seg.strip()
+                if seg:
+                    result.append(seg)
+        return result
+
+    def read_power_sequences():
+        """读取并标准化上下电序列（处理中文逗号、合并元素等问题）。
+        
+        Returns:
+            (power_on_sequence, power_off_sequence): 两个干净的 ID 字符串列表
+        """
+        cfg = Tool.read_power_config_raw()
+        on_seq = Tool._normalize_id_list(cfg.get("power_on_sequence", []))
+        off_seq = Tool._normalize_id_list(cfg.get("power_off_sequence", []))
+        return on_seq, off_seq
 
     def _normalize_device(dev):
         power_type = dev.get("type", "long")
@@ -214,6 +261,8 @@ class Tool():
                 "auto_output": bool(serial_cfg.get("auto_output", False)),
             },
             "devices": devices,
+            "power_on_sequence": [str(x) for x in cfg.get("power_on_sequence", [])],
+            "power_off_sequence": [str(x) for x in cfg.get("power_off_sequence", [])],
         }
     
     def init_execl_list():

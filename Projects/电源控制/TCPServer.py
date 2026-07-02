@@ -124,73 +124,135 @@ class TCPServer(QThread):
 
 
     def _check_device_available(self):
-        """检查设备是否可用"""
-        return len(LongPower.get_instances()) > 0
+        """检查是否有任意已注册电源实例（长条或方形）"""
+        return Tool.has_power_devices()
 
     def _resolve_power(self, params):
-        """根据远程协议中的 device 参数（配置 id）定位长条电源实例"""
+        """根据远程协议中的 device 参数（配置 id）定位电源实例。
+        
+        - 指定 device 时：在统一注册表中查找，支持长条和方形两种类型。
+        - 未指定 device 时：回退到默认长条电源（向后兼容）。
+        """
         params = params or {}
         device_key = params.get("device") or params.get("Device")
         if device_key is not None:
-            power = LongPower.get_by_device_id(str(device_key))
+            power = Tool.get_power_device(str(device_key))
             if power is None:
                 return None, f"Device not found: {device_key}"
-            if not power.remote_enabled:
+            if not getattr(power, 'remote_enabled', True):
                 return None, f"Device remote control disabled: {device_key}"
             return power, None
 
+        # 无 device 参数时回退到默认长条电源
         power = LongPower.get_default_remote()
         if power is None:
             return None, "No power control board available"
         return power, None
-    
+
     def _handle_power_on(self, params):
-        """处理开机命令"""
+        """处理单台电源上电命令（支持长条和方形）"""
         power, err = self._resolve_power(params)
         if err:
             return self.make_backpack(False, None, err)
+        if not hasattr(power, 'invoke_tcp_power_on'):
+            return self.make_backpack(False, None, "Device does not support remote power-on")
         result = power.invoke_tcp_power_on()
         return self.make_backpack(result[0], None, result[1])
-    
+
     def _handle_power_off(self, params):
-        """处理关机命令"""
+        """处理单台电源下电命令（支持长条和方形）"""
         power, err = self._resolve_power(params)
         if err:
             return self.make_backpack(False, None, err)
+        if not hasattr(power, 'invoke_tcp_power_off'):
+            return self.make_backpack(False, None, "Device does not support remote power-off")
         result = power.invoke_tcp_power_off()
         return self.make_backpack(result[0], None, result[1])
-    
+
     def _handle_current_value(self, params):
-        """处理获取电流电压命令"""
+        """处理获取电流电压命令（长条电源专用）"""
         power, err = self._resolve_power(params)
         if err:
             return self.make_backpack(False, None, err)
+        if not hasattr(power, 'get_value'):
+            return self.make_backpack(False, None, "Device does not support CurrentValue query")
         voltage, current = power.get_value()
         return self.make_backpack(True, {"Voltage": voltage, "Current": current}, None)
-    
+
     def _handle_down_deflection(self, params):
-        """处理下偏转命令"""
+        """处理拉偏测试命令（长条电源专用）"""
         if not params or "Con" not in params:
             return self.make_backpack(False, None, "Missing parameter: Con")
         power, err = self._resolve_power(params)
         if err:
             return self.make_backpack(False, None, err)
+        if not hasattr(power, 'tcp_deflect'):
+            return self.make_backpack(False, None, "Device does not support DownDeflection")
         if not power.isConnected:
             return self.make_backpack(False, None, "Serial port not connected")
-        
-        deflection_type = params["Con"]
-        
-        power.tcp_deflect.emit(deflection_type, False)
+        power.tcp_deflect.emit(params["Con"], False)
         return self.make_backpack(True, None, None)
-    
+
     def _handle_connect_device(self, params):
-        """处理连接设备命令"""
+        """处理串口连接命令（长条电源专用）"""
         power, err = self._resolve_power(params)
         if err:
             return self.make_backpack(False, None, err)
+        if not hasattr(power, 'invoke_tcp_connect'):
+            return self.make_backpack(False, None, "Device does not support remote connect")
         result = power.invoke_tcp_connect()
         return self.make_backpack(result[0], None, result[1])
-    
+
+    def _handle_seq_power_on(self, params):
+        """处理顺序上电命令：按 power_on_sequence 依次上电，阻塞至全部完成后返回结果"""
+        sequence, _ = Tool.read_power_sequences()
+        if not sequence:
+            return self.make_backpack(False, None,
+                "power_on_sequence is empty, configure it in power_config.json")
+        errors = []
+        for dev_id in sequence:
+            dev = Tool.get_power_device(dev_id)
+            if dev is None:
+                errors.append(f"Device not found: {dev_id}")
+                continue
+            if not getattr(dev, 'remote_enabled', True):
+                errors.append(f"Remote disabled: {dev_id}")
+                continue
+            if not hasattr(dev, 'invoke_tcp_power_on'):
+                errors.append(f"No power-on interface: {dev_id}")
+                continue
+            result = dev.invoke_tcp_power_on()
+            if not result[0]:
+                errors.append(f"{dev_id}: {result[1]}")
+        if errors:
+            return self.make_backpack(False, None, "; ".join(errors))
+        return self.make_backpack(True, None, None)
+
+    def _handle_seq_power_off(self, params):
+        """处理顺序下电命令：按 power_off_sequence 依次下电，阻塞至全部完成后返回结果"""
+        _, sequence = Tool.read_power_sequences()
+        if not sequence:
+            return self.make_backpack(False, None,
+                "power_off_sequence is empty, configure it in power_config.json")
+        errors = []
+        for dev_id in sequence:
+            dev = Tool.get_power_device(dev_id)
+            if dev is None:
+                errors.append(f"Device not found: {dev_id}")
+                continue
+            if not getattr(dev, 'remote_enabled', True):
+                errors.append(f"Remote disabled: {dev_id}")
+                continue
+            if not hasattr(dev, 'invoke_tcp_power_off'):
+                errors.append(f"No power-off interface: {dev_id}")
+                continue
+            result = dev.invoke_tcp_power_off()
+            if not result[0]:
+                errors.append(f"{dev_id}: {result[1]}")
+        if errors:
+            return self.make_backpack(False, None, "; ".join(errors))
+        return self.make_backpack(True, None, None)
+
     def _handle_check(self, params):
         """处理版本检查命令"""
         return self.make_backpack(True, VERSION, None)
@@ -201,37 +263,35 @@ class TCPServer(QThread):
             opcode = cmd_dict.get('opcode')
             if not opcode:
                 return self.make_backpack(False, None, "Missing opcode")
-            
-            # 命令映射表 - 不需要设备的命令
+
+            # 不依赖设备实例的命令
             no_device_commands = {
-                'check': self._handle_check
+                'check': self._handle_check,
+                'SeqPowerON': self._handle_seq_power_on,
+                'SeqPowerOFF': self._handle_seq_power_off,
             }
-            
-            # 命令映射表 - 需要设备的命令
+
+            # 需要定位具体设备的命令
             device_commands = {
                 'PowerON': self._handle_power_on,
                 'PowerOFF': self._handle_power_off,
                 'CurrentValue': self._handle_current_value,
                 'DownDeflection': self._handle_down_deflection,
-                'ConnectDevice': self._handle_connect_device
+                'ConnectDevice': self._handle_connect_device,
             }
-            
-            # 处理不需要设备的命令
+
             if opcode in no_device_commands:
-                return no_device_commands[opcode](None)
-            
-            # 处理需要设备的命令
+                params = cmd_dict.get('parameter', {})
+                return no_device_commands[opcode](params)
+
             if opcode in device_commands:
-                # 检查设备是否可用
                 if not self._check_device_available():
                     return self.make_backpack(False, None, "No power control board available")
-                
                 params = cmd_dict.get('parameter', {})
                 return device_commands[opcode](params)
-            
-            # 未知命令
+
             return self.make_backpack(False, None, f"Unknown command: {opcode}")
-            
+
         except KeyError as e:
             return self.make_backpack(False, None, f"Missing required field: {str(e)}")
         except Exception as e:

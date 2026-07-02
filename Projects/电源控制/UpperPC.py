@@ -4,6 +4,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import binascii
+import threading
 import pandas as pd
 # C:\Python\Python36\Scripts\pyinstaller.exe -F --noconsole --onefile -p D:\Coding\python\Pyserial-Demo-master\venv\Lib\site-packages pyserial_demo_2.py
 import os.path
@@ -52,6 +53,17 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         self.settings_btn.setStyleSheet("font: 12pt \"微软雅黑\";")
         self.settings_btn.clicked.connect(self.show_power_settings)
         self.leftlayout.addWidget(self.settings_btn, 0, 0)
+
+        self.seq_on_btn = QtWidgets.QPushButton("顺序上电")
+        self.seq_on_btn.setStyleSheet("font: 12pt \"微软雅黑\";")
+        self.seq_on_btn.clicked.connect(self._seq_power_on)
+        self.leftlayout.addWidget(self.seq_on_btn, 1, 0)
+
+        self.seq_off_btn = QtWidgets.QPushButton("顺序下电")
+        self.seq_off_btn.setStyleSheet("font: 12pt \"微软雅黑\";")
+        self.seq_off_btn.clicked.connect(self._seq_power_off)
+        self.leftlayout.addWidget(self.seq_off_btn, 2, 0)
+
         self.frame_left.setLayout(self.leftlayout)
 
         cfg = Tool.read_config("Additional")
@@ -84,6 +96,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
                     ch1_current=dev["ch1"]["current"],
                     ch2_voltage=dev["ch2"]["voltage"],
                     ch2_current=dev["ch2"]["current"],
+                    remote_enabled=dev["remote"],
                 )
                 obj.ch1_safty = dev["current_limit_ch1"]
                 obj.ch2_safty = dev["current_limit_ch2"]
@@ -114,6 +127,62 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         if serial_cfg["auto_output"]:
             for obj in self.power_objs:
                 obj.start_btn.click()
+
+    def _seq_power_on(self):
+        """一键顺序上电：按 power_on_sequence 顺序依次调用各电源的上电接口"""
+        sequence, _ = Tool.read_power_sequences()
+        if not sequence:
+            QtWidgets.QMessageBox.information(
+                self, "提示", "尚未配置顺序上电列表，请在「电源设置」中设置 power_on_sequence。"
+            )
+            return
+        self.seq_on_btn.setEnabled(False)
+
+        def _do():
+            for dev_id in sequence:
+                dev = Tool.get_power_device(dev_id)
+                if dev is None:
+                    print(f"[顺序上电] 设备 {dev_id} 未注册，跳过")
+                    continue
+                if hasattr(dev, "invoke_tcp_power_on"):
+                    result = dev.invoke_tcp_power_on()
+                    if not result[0]:
+                        print(f"[顺序上电] 设备 {dev_id} 上电失败: {result[1]}")
+                else:
+                    print(f"[顺序上电] 设备 {dev_id} 不支持远程上电接口，跳过")
+                time.sleep(2)
+            QtWidgets.QApplication.instance().processEvents()
+            self.seq_on_btn.setEnabled(True)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _seq_power_off(self):
+        """一键顺序下电：按 power_off_sequence 顺序依次调用各电源的下电接口"""
+        _, sequence = Tool.read_power_sequences()
+        if not sequence:
+            QtWidgets.QMessageBox.information(
+                self, "提示", "尚未配置顺序下电列表，请在「电源设置」中设置 power_off_sequence。"
+            )
+            return
+        self.seq_off_btn.setEnabled(False)
+
+        def _do():
+            for dev_id in sequence:
+                dev = Tool.get_power_device(dev_id)
+                if dev is None:
+                    print(f"[顺序下电] 设备 {dev_id} 未注册，跳过")
+                    continue
+                if hasattr(dev, "invoke_tcp_power_off"):
+                    result = dev.invoke_tcp_power_off()
+                    if not result[0]:
+                        print(f"[顺序下电] 设备 {dev_id} 下电失败: {result[1]}")
+                else:
+                    print(f"[顺序下电] 设备 {dev_id} 不支持远程下电接口，跳过")
+                time.sleep(2)
+            QtWidgets.QApplication.instance().processEvents()
+            self.seq_off_btn.setEnabled(True)
+
+        threading.Thread(target=_do, daemon=True).start()
 
     def show_power_settings(self):
         dlg = PowerSettingsDialog(self)

@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QRadioButton,
     QButtonGroup, QStackedWidget, QWidget, QLabel, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QMessageBox,
-    QHeaderView,
+    QHeaderView, QLineEdit, QScrollArea, QFrame,
 )
 
 from .tool import Tool
@@ -304,11 +304,24 @@ class PowerSettingsDialog(QDialog):
         self._current_raw = Tool.read_power_config_raw()
         self._scenario_pages = {}
 
+        # 外层布局：滚动区 + 固定底部按钮
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(0, 0, 0, 8)
+        root.setSpacing(0)
 
-        root.addWidget(_section_label("选择使用场景"))
+        # ── 滚动区 ──────────────────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        scroll_content = QWidget()
+        inner = QVBoxLayout(scroll_content)
+        inner.setContentsMargins(16, 16, 16, 8)
+        inner.setSpacing(12)
+
+        # 场景选择
+        inner.addWidget(_section_label("选择使用场景"))
         scene_panel = QWidget()
         scene_layout = QVBoxLayout(scene_panel)
         scene_layout.setContentsMargins(8, 0, 8, 0)
@@ -320,9 +333,10 @@ class PowerSettingsDialog(QDialog):
             rb.setMinimumHeight(44)
             self.scene_group.addButton(rb, idx)
             scene_layout.addWidget(rb)
-        root.addWidget(scene_panel)
+        inner.addWidget(scene_panel)
 
-        root.addWidget(_section_label("串口行为"))
+        # 串口行为
+        inner.addWidget(_section_label("串口行为"))
         serial_panel = QWidget()
         serial_layout = QVBoxLayout(serial_panel)
         serial_layout.setContentsMargins(8, 0, 8, 0)
@@ -331,8 +345,40 @@ class PowerSettingsDialog(QDialog):
         self.chk_auto_output = QCheckBox("启动时自动开启输出")
         serial_layout.addWidget(self.chk_auto_connect)
         serial_layout.addWidget(self.chk_auto_output)
-        root.addWidget(serial_panel)
+        inner.addWidget(serial_panel)
 
+        # 顺序上下电配置
+        inner.addWidget(_section_label("顺序上下电配置"))
+        seq_panel = QWidget()
+        seq_layout = QVBoxLayout(seq_panel)
+        seq_layout.setContentsMargins(8, 0, 8, 0)
+        seq_layout.setSpacing(6)
+
+        on_row = QHBoxLayout()
+        on_label = QLabel("上电顺序（设备ID，逗号分隔）：")
+        on_label.setFixedWidth(220)
+        self.seq_on_edit = QLineEdit()
+        self.seq_on_edit.setPlaceholderText("例如：GXT, GF, SQ1, SQ2（中英文逗号均可）")
+        on_row.addWidget(on_label)
+        on_row.addWidget(self.seq_on_edit)
+        seq_layout.addLayout(on_row)
+
+        off_row = QHBoxLayout()
+        off_label = QLabel("下电顺序（设备ID，逗号分隔）：")
+        off_label.setFixedWidth(220)
+        self.seq_off_edit = QLineEdit()
+        self.seq_off_edit.setPlaceholderText("例如：SQ2, SQ1, GF, GXT（中英文逗号均可）")
+        off_row.addWidget(off_label)
+        off_row.addWidget(self.seq_off_edit)
+        seq_layout.addLayout(off_row)
+
+        seq_hint = QLabel("设备ID需与上方设备列表中的 ID 一致，留空则不执行顺序上下电。")
+        seq_hint.setWordWrap(True)
+        seq_layout.addWidget(seq_hint)
+        inner.addWidget(seq_panel)
+
+        # 设备参数表
+        inner.addWidget(_section_label("设备参数"))
         self.stack = QStackedWidget()
         for sid, title, _ in SCENARIO_META:
             if sid == "manual":
@@ -342,22 +388,37 @@ class PowerSettingsDialog(QDialog):
             self._scenario_pages[sid] = page
             wrap = QWidget()
             wrap_layout = QVBoxLayout(wrap)
+            wrap_layout.setContentsMargins(0, 0, 0, 0)
             param_label = QLabel(f"{title} — 设备参数（可修改串口与电压电流）")
             param_label.setWordWrap(True)
             wrap_layout.addWidget(param_label)
             wrap_layout.addWidget(page)
             self.stack.addWidget(wrap)
-        root.addWidget(self.stack, 1)
+        self.stack.setMinimumHeight(180)
+        inner.addWidget(self.stack, 1)
 
-        btn_row = QHBoxLayout()
+        scroll.setWidget(scroll_content)
+        root.addWidget(scroll, 1)
+
+        # ── 固定底部分隔线 + 按钮 ────────────────────────────────────────────
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        root.addWidget(separator)
+
+        btn_widget = QWidget()
+        btn_row = QHBoxLayout(btn_widget)
+        btn_row.setContentsMargins(16, 8, 16, 4)
         btn_row.addStretch()
         self.btn_apply = QPushButton("保存并应用")
         self.btn_cancel = QPushButton("取消")
+        self.btn_apply.setMinimumWidth(100)
+        self.btn_cancel.setMinimumWidth(80)
         self.btn_apply.clicked.connect(self._on_apply)
         self.btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_cancel)
-        root.addLayout(btn_row)
+        root.addWidget(btn_widget)
 
         self.scene_group.buttonClicked.connect(self._on_scenario_changed)
         self._load_from_config(self._current_raw)
@@ -370,6 +431,11 @@ class PowerSettingsDialog(QDialog):
         serial = cfg.get("serial", {})
         self.chk_auto_connect.setChecked(bool(serial.get("auto_connect", False)))
         self.chk_auto_output.setChecked(bool(serial.get("auto_output", False)))
+
+        power_on_seq = cfg.get("power_on_sequence", [])
+        power_off_seq = cfg.get("power_off_sequence", [])
+        self.seq_on_edit.setText(", ".join(str(x) for x in power_on_seq))
+        self.seq_off_edit.setText(", ".join(str(x) for x in power_off_seq))
 
         for btn in self.scene_group.buttons():
             if btn.property("scenario_id") == scenario:
@@ -416,6 +482,10 @@ class PowerSettingsDialog(QDialog):
                 if d["type"] not in ("long", "square"):
                     raise ValueError(f"未知电源类型: {d['type']}")
 
+            def _parse_seq(text):
+                # 同时支持中文逗号「，」和英文逗号「,」作为分隔符
+                return [x.strip() for x in text.replace('，', ',').split(',') if x.strip()]
+
             cfg = {
                 "scenario": sid,
                 "serial": {
@@ -423,6 +493,8 @@ class PowerSettingsDialog(QDialog):
                     "auto_output": self.chk_auto_output.isChecked(),
                 },
                 "devices": devices,
+                "power_on_sequence": _parse_seq(self.seq_on_edit.text()),
+                "power_off_sequence": _parse_seq(self.seq_off_edit.text()),
             }
             Tool.save_power_config(cfg)
         except (ValueError, json.JSONDecodeError) as e:

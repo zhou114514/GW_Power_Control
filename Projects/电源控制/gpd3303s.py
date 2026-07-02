@@ -195,7 +195,36 @@ class GPD3303S(object):
         err = self.getError()
         if err != b'No Error.':
             raise RuntimeError(err)
-        
+
+    def getStatus(self):
+        """
+        STATUS?
+        返回原始状态字节（ASCII十进制字符串，如 b'53'）。
+        位含义：
+          bit0   CH1  0=CC模式，1=CV模式
+          bit1   CH2  0=CC模式，1=CV模式
+          bit2-3 Tracking  01=独立，11=串联，10=并联
+          bit4   Beep 0=关，1=开
+          bit5   Output 0=关，1=开
+          bit6-7 Baud  00=115200bps，01=57600bps，10=9600bps
+        """
+        self.serial.write(b'STATUS?\n')
+        ret = self.serial.readline(eol=self.eol)
+        return ret[:-len(self.eol)]
+
+    def getTrackingMode(self):
+        """
+        解析 STATUS? 的 bit2-3 返回追踪模式字符串：
+          'independent' (01) | 'series' (11) | 'parallel' (10)
+        """
+        raw = self.getStatus()
+        bits_2_3 = int(raw[2:4], 2)
+        return {0b01: 'independent', 0b11: 'series', 0b10: 'parallel'}.get(bits_2_3, 'independent')
+
+    def isParallel(self):
+        """返回当前是否处于并联模式"""
+        return self.getTrackingMode() == 'parallel'
+
     def getError(self):
         """
         ERR?
