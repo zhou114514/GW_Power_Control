@@ -202,6 +202,36 @@ class Tool():
         off_seq = Tool._normalize_id_list(cfg.get("power_off_sequence", []))
         return on_seq, off_seq
 
+    def exec_power_sequence(sequence, power_on=True, check_remote=True, interval=2):
+        """按序列依次上电或下电，遇到首个错误立即返回。
+
+        Args:
+            sequence: 设备 ID 列表
+            power_on: True 为上电，False 为下电
+            check_remote: 是否检查 remote_enabled 标志（TCP 远程控制应为 True）
+            interval: 每台设备成功操作后的等待秒数
+
+        Returns:
+            (success, error_message): 成功时 error_message 为 None
+        """
+        invoke_name = "invoke_tcp_power_on" if power_on else "invoke_tcp_power_off"
+        iface_err = "No power-on interface" if power_on else "No power-off interface"
+
+        for i, dev_id in enumerate(sequence):
+            dev = Tool.get_power_device(dev_id)
+            if dev is None:
+                return False, f"Device not found: {dev_id}"
+            if check_remote and not getattr(dev, "remote_enabled", True):
+                return False, f"Remote disabled: {dev_id}"
+            if not hasattr(dev, invoke_name):
+                return False, f"{iface_err}: {dev_id}"
+            result = getattr(dev, invoke_name)()
+            if not result[0]:
+                return False, f"{dev_id}: {result[1]}"
+            if i < len(sequence) - 1:
+                time.sleep(interval)
+        return True, None
+
     def _normalize_device(dev):
         power_type = dev.get("type", "long")
         normalized = {

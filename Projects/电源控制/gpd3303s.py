@@ -5,6 +5,7 @@ Will Instrument Co., Ltd.
 
 import serial
 import sys
+import threading
 
 class MySerial(serial.Serial):
     """
@@ -42,8 +43,26 @@ class GPD3303S(object):
         self.__dataFlowControl = None
         self.eol = b'\r'
         self.serial = None
+        self.lock = threading.RLock()
+        self._port_name = None
+
+    def _clear_buffer(self):
+        if self.serial and getattr(self.serial, 'is_open', False):
+            try:
+                self.serial.reset_input_buffer()
+            except Exception:
+                pass
+
+    def _get_error_locked(self):
+        self.serial.write(b'ERR?\n')
+        self.serial.flush()
+        ret = self.serial.readline(eol=self.eol)
+        if ret != b'':
+            return ret[:-len(self.eol)]
+        raise RuntimeError('Cannot read error message')
 
     def open(self, port, readTimeOut = 1, writeTimeOut = 1):
+        self._port_name = port
         self.serial = MySerial(port         = port,
                                baudrate     = self.__baudRate,
                                bytesize     = self.__dataBit,
@@ -52,22 +71,26 @@ class GPD3303S(object):
                                timeout      = readTimeOut,
                                writeTimeout = writeTimeOut,
                                dsrdtr       = self.__dataFlowControl)
-        
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
 
-        # 检查分隔符是否正确设置。
-        # 默认情况下，\r 是分隔符，但较新的 GPD3303S 使用 \r\n 作为分隔符。
-        self.setTimeout(0.1)
-        ret = self.serial.read(1)
-        self.setTimeout(readTimeOut)
-        
-        if ret == b'\n':
-            self.setDelimiter(b'\r\n')
+        with self.lock:
+            self._clear_buffer()
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
+
+            # 检查分隔符是否正确设置。
+            # 默认情况下，\r 是分隔符，但较新的 GPD3303S 使用 \r\n 作为分隔符。
+            self.setTimeout(0.1)
+            ret = self.serial.read(1)
+            self.setTimeout(readTimeOut)
+
+            if ret == b'\n':
+                self.setDelimiter(b'\r\n')
     
     def close(self):
-        self.serial.close()
+        with self.lock:
+            if self.serial and getattr(self.serial, 'is_open', False):
+                self.serial.close()
 
     def setTimeout(self, timeout):
         if hasattr(self.serial, 'setTimeout') and \
@@ -113,88 +136,98 @@ class GPD3303S(object):
         ISET<X>:<NR2>
         """
         self.isValidChannel(channel)
-        self.serial.write(b'ISET%d:%.3f\n' % (channel, current))
-
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'ISET%d:%.3f\n' % (channel, current))
+            self.serial.flush()
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
         
     def getCurrent(self, channel):
         """
         ISET<X>?
         """
         self.isValidChannel(channel)
-        self.serial.write(b'ISET%d?\n' % channel)
-        ret = self.serial.readline(eol=self.eol)
-
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
-
-        return float(ret[:-len(self.eol)].replace(b'A', b''))
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'ISET%d?\n' % channel)
+            self.serial.flush()
+            ret = self.serial.readline(eol=self.eol)
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
+            return float(ret[:-len(self.eol)].replace(b'A', b''))
 
     def setVoltage(self, channel, voltage):
         """
         VSET<X>:<NR2>
         """
         self.isValidChannel(channel)
-        self.serial.write(b'VSET%d:%.3f\n' % (channel, voltage))
-
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'VSET%d:%.3f\n' % (channel, voltage))
+            self.serial.flush()
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
         
     def getVoltage(self, channel):
         """
         VSET<X>?
         """
         self.isValidChannel(channel)
-        self.serial.write(b'VSET%d?\n' % channel)
-        ret = self.serial.readline(eol=self.eol)
-
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
-
-        return float(ret[:-len(self.eol)].replace(b'V', b''))
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'VSET%d?\n' % channel)
+            self.serial.flush()
+            ret = self.serial.readline(eol=self.eol)
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
+            return float(ret[:-len(self.eol)].replace(b'V', b''))
 
     def getCurrentOutput(self, channel):
         """
         IOUT<X>?
         """
         self.isValidChannel(channel)
-        self.serial.write(b'IOUT%d?\n' % channel)
-        ret = self.serial.readline(eol=self.eol)
-
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
-
-        return float(ret[:-len(self.eol)].replace(b'A', b''))
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'IOUT%d?\n' % channel)
+            self.serial.flush()
+            ret = self.serial.readline(eol=self.eol)
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
+            return float(ret[:-len(self.eol)].replace(b'A', b''))
 
     def getVoltageOutput(self, channel):
         """
         VOUT<X>?
         """
         self.isValidChannel(channel)
-        self.serial.write(b'VOUT%d?\n' % channel)
-        ret = self.serial.readline(eol=self.eol)
-
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
-
-        return float(ret[:-len(self.eol)].replace(b'V', b''))
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'VOUT%d?\n' % channel)
+            self.serial.flush()
+            ret = self.serial.readline(eol=self.eol)
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
+            return float(ret[:-len(self.eol)].replace(b'V', b''))
 
     def enableOutput(self, enable = True):
         """
         OUT<Boolean>
         """
-        self.serial.write(b'OUT%d\n' % int(enable))
-
-        err = self.getError()
-        if err != b'No Error.':
-            raise RuntimeError(err)
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'OUT%d\n' % int(enable))
+            self.serial.flush()
+            err = self._get_error_locked()
+            if err != b'No Error.':
+                raise RuntimeError(err)
 
     def getStatus(self):
         """
@@ -208,9 +241,12 @@ class GPD3303S(object):
           bit5   Output 0=关，1=开
           bit6-7 Baud  00=115200bps，01=57600bps，10=9600bps
         """
-        self.serial.write(b'STATUS?\n')
-        ret = self.serial.readline(eol=self.eol)
-        return ret[:-len(self.eol)]
+        with self.lock:
+            self._clear_buffer()
+            self.serial.write(b'STATUS?\n')
+            self.serial.flush()
+            ret = self.serial.readline(eol=self.eol)
+            return ret[:-len(self.eol)]
 
     def getTrackingMode(self):
         """
@@ -229,13 +265,8 @@ class GPD3303S(object):
         """
         ERR?
         """
-        self.serial.write(b'ERR?\n')
-        ret = self.serial.readline(eol=self.eol)
-        if ret != b'':
-            return ret[:-len(self.eol)]
-        else:
-            raise RuntimeError('Cannot read error message')
-        
+        with self.lock:
+            return self._get_error_locked()
 
     def setDelimiter(self, eol = b'\r\n'):
         """

@@ -44,6 +44,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
     IoutCol = []
     name = '11'
     sigInfo = pyqtSignal(str)
+    start_signal = pyqtSignal([str, float, float, float, float])
     current_warn = pyqtSignal([str, str, str])
     channel1_signal = pyqtSignal(dict)
     channel2_signal = pyqtSignal(dict)
@@ -65,6 +66,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.isListen = False
 
         self.StopFlag = True
+        self.pressNo = False
         self.lagtime = 1
         self.ch1_safty = 100
         self.ch2_safty = 100
@@ -359,11 +361,23 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
             self.sigInfo.emit(f"请先连接电源")
             return
         self.sendALLData()
+        ch1_v = self.GPD.getVoltage(1)
+        ch1_i = self.GPD.getCurrent(1)
+        ch2_v = self.GPD.getVoltage(2)
+        ch2_i = self.GPD.getCurrent(2)
+        self.VoutCol[1].setText("电压：" + str(ch1_v))
+        self.IoutCol[1].setText("电流：" + str(ch1_i))
+        self.VoutCol[2].setText("电压：" + str(ch2_v))
+        self.IoutCol[2].setText("电流：" + str(ch2_i))
+        self.start_signal.emit(self.name, ch1_v, ch1_i, ch2_v, ch2_i)
+        if self.pressNo:
+            self.pressNo = False
+            return
+        self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3]
         self.GPD.enableOutput()
         self.sigInfo.emit(f"已打开电源输出")
-        time.sleep(1)
         self.isOutput = True
-        self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3] if self.start_time is None else self.start_time
+        time.sleep(1)
         self.start_plot()
 
 
@@ -388,7 +402,6 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         fail_count = 0
         while not self.StopFlag:
             try:
-                fail_count = 0
                 for i in range(1,3):
                     CH[i]["电压"] = self.V_get(i)
                     CH[i]["电流"] = self.I_get(i)
@@ -396,6 +409,7 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
                         self.GPD.enableOutput(False)
                         self.StopFlag = True
                         self.current_warn.emit(f"{self.name}", f"CH{i}", f"{CH[i]["电流"]}")
+                fail_count = 0
                 # self.channel1_layout.updateData(CH[1])
                 # self.channel2_layout.updateData(CH[2])
                 self.channel1_signal.emit(CH[1])
@@ -423,8 +437,8 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
                 if fail_count >= MAX_PLOT_FAILURES:
                     self.sigInfo.emit("串口连续异常，已自动停止采集")
                     self.StopFlag = True
-                    self.power_port_close()
                     break
+                time.sleep(1)
             # 采集间隔
             time.sleep(0.1)
 

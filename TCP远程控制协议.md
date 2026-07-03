@@ -402,7 +402,7 @@ auto_connect = True
 
 ### 4.8 `SeqPowerON` — 顺序上电
 
-按 `power_config.json` 中 `power_on_sequence` 列表的顺序，依次对各电源执行上电操作。**阻塞直至所有设备完成后返回**，客户端可获得每台设备的成功/失败汇总。
+按 `power_config.json` 中 `power_on_sequence` 列表的顺序，依次对各电源执行上电操作。**遇到首个错误立即停止**，不再继续后续设备，并返回失败响应。
 
 **适用类型**：长条电源、方形电源（均支持）
 
@@ -437,17 +437,17 @@ auto_connect = True
 }
 ```
 
-**部分失败响应**（某台设备上电失败，其余设备继续执行）
+**失败响应**（某台设备上电失败，后续设备不再执行）
 
 ```json
 {
   "IsSuccessful": false,
   "Value": "Null",
-  "ErrorMessage": "LONG1: Port not connected; SQ3: Operation timed out"
+  "ErrorMessage": "LONG1: Port not connected"
 }
 ```
 
-`ErrorMessage` 为分号分隔的各设备错误列表，未列出的设备均成功。
+`ErrorMessage` 为首个失败设备的错误信息，已成功上电的设备保持上电状态。
 
 **常见错误**
 
@@ -464,7 +464,7 @@ auto_connect = True
 
 ### 4.9 `SeqPowerOFF` — 顺序下电
 
-按 `power_config.json` 中 `power_off_sequence` 列表的顺序，依次对各电源执行下电操作。**阻塞直至所有设备完成后返回**。
+按 `power_config.json` 中 `power_off_sequence` 列表的顺序，依次对各电源执行下电操作。**遇到首个错误立即停止**，不再继续后续设备，并返回失败响应。
 
 **适用类型**：长条电源、方形电源（均支持）
 
@@ -483,6 +483,18 @@ auto_connect = True
   "ErrorMessage": "Null"
 }
 ```
+
+**失败响应**（某台设备下电失败，后续设备不再执行）
+
+```json
+{
+  "IsSuccessful": false,
+  "Value": "Null",
+  "ErrorMessage": "SQ3: Operation timed out"
+}
+```
+
+`ErrorMessage` 为首个失败设备的错误信息。
 
 **常见错误**
 
@@ -552,13 +564,13 @@ auto_connect = True
   │                               │
   │──── SeqPowerON ──────────────►│  按 power_on_sequence 顺序逐台上电
   │                               │  （阻塞，直至全部完成）
-  │◄─── 成功/失败汇总 ────────────│
+  │◄─── 成功/失败（遇错即停）──────│
   │                               │
   │  ····测试进行中····           │
   │                               │
   │──── SeqPowerOFF ─────────────►│  按 power_off_sequence 顺序逐台下电
   │                               │  （阻塞，直至全部完成）
-  │◄─── 成功/失败汇总 ────────────│
+  │◄─── 成功/失败（遇错即停）──────│
   │                               │
   │──── 断开连接 ─────────────────►│
 ```
@@ -691,7 +703,7 @@ python -c "import socket,json; s=socket.create_connection(('127.0.0.1',10002)); 
 
 1. **串口独占**：同一电源串口只能被一个进程占用；远程 `ConnectDevice` 前请确保串口未被其他程序打开。
 2. **线程安全**：电源操作通过 Qt 主线程调度执行，单条命令最长等待 30 秒。
-3. **顺序上下电阻塞**：`SeqPowerON` / `SeqPowerOFF` 会在所有设备完成后才返回，客户端 socket 超时须设置充裕（建议 `设备数 × 5 s` 以上）。
+3. **顺序上下电阻塞**：`SeqPowerON` / `SeqPowerOFF` 在全部成功或遇到首个错误后返回；遇错时立即停止后续设备。客户端 socket 超时须设置充裕（建议 `设备数 × 5 s` 以上）。
 4. **采集依赖**：`CurrentValue` 返回的是采集线程缓存值；上电后建议等待约 1 秒再读取。
 5. **拉偏异步**：`DownDeflection` 立即返回，实际拉偏在后台进行，需自行轮询电压。
 6. **安全限流**：电流超过 `power_config.json` 中 `current_limit` 时，软件会自动停止采集并弹窗告警（本地界面）。

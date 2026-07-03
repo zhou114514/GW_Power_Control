@@ -204,53 +204,25 @@ class TCPServer(QThread):
         return self.make_backpack(result[0], None, result[1])
 
     def _handle_seq_power_on(self, params):
-        """处理顺序上电命令：按 power_on_sequence 依次上电，阻塞至全部完成后返回结果"""
+        """处理顺序上电命令：按 power_on_sequence 依次上电，遇错立即停止并返回"""
         sequence, _ = Tool.read_power_sequences()
         if not sequence:
             return self.make_backpack(False, None,
                 "power_on_sequence is empty, configure it in power_config.json")
-        errors = []
-        for dev_id in sequence:
-            dev = Tool.get_power_device(dev_id)
-            if dev is None:
-                errors.append(f"Device not found: {dev_id}")
-                continue
-            if not getattr(dev, 'remote_enabled', True):
-                errors.append(f"Remote disabled: {dev_id}")
-                continue
-            if not hasattr(dev, 'invoke_tcp_power_on'):
-                errors.append(f"No power-on interface: {dev_id}")
-                continue
-            result = dev.invoke_tcp_power_on()
-            if not result[0]:
-                errors.append(f"{dev_id}: {result[1]}")
-        if errors:
-            return self.make_backpack(False, None, "; ".join(errors))
+        ok, err = Tool.exec_power_sequence(sequence, power_on=True, check_remote=True)
+        if not ok:
+            return self.make_backpack(False, None, err)
         return self.make_backpack(True, None, None)
 
     def _handle_seq_power_off(self, params):
-        """处理顺序下电命令：按 power_off_sequence 依次下电，阻塞至全部完成后返回结果"""
+        """处理顺序下电命令：按 power_off_sequence 依次下电，遇错立即停止并返回"""
         _, sequence = Tool.read_power_sequences()
         if not sequence:
             return self.make_backpack(False, None,
                 "power_off_sequence is empty, configure it in power_config.json")
-        errors = []
-        for dev_id in sequence:
-            dev = Tool.get_power_device(dev_id)
-            if dev is None:
-                errors.append(f"Device not found: {dev_id}")
-                continue
-            if not getattr(dev, 'remote_enabled', True):
-                errors.append(f"Remote disabled: {dev_id}")
-                continue
-            if not hasattr(dev, 'invoke_tcp_power_off'):
-                errors.append(f"No power-off interface: {dev_id}")
-                continue
-            result = dev.invoke_tcp_power_off()
-            if not result[0]:
-                errors.append(f"{dev_id}: {result[1]}")
-        if errors:
-            return self.make_backpack(False, None, "; ".join(errors))
+        ok, err = Tool.exec_power_sequence(sequence, power_on=False, check_remote=True)
+        if not ok:
+            return self.make_backpack(False, None, err)
         return self.make_backpack(True, None, None)
 
     def _handle_check(self, params):

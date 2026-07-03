@@ -28,6 +28,8 @@ VERSION = "Unknown" if not os.path.exists("更新内容.csv") or \
 
 class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理左侧按钮弹出窗口的逻辑
 
+    _seq_ui_signal = pyqtSignal(bool, bool, str)  # is_power_on, success, error_message
+
     leftBtnDict = {} #左侧按钮
     bindBtnWidget={} #右侧页面
     rightPageDict = {}
@@ -38,6 +40,7 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         super(UpperPcWin, self).__init__()
         self.setupUi(self) #必须放在show之后
         self.setWindowTitle(f"光学头电源控制{VERSION}")
+        self._seq_ui_signal.connect(self._on_seq_finished)
         # self.ftp = FTPClient("192.168.10.100", "yab", "qwer1234!!")
 
         # self.initData()
@@ -128,61 +131,75 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
             for obj in self.power_objs:
                 obj.start_btn.click()
 
-    def _seq_power_on(self):
-        """一键顺序上电：按 power_on_sequence 顺序依次调用各电源的上电接口"""
-        sequence, _ = Tool.read_power_sequences()
-        if not sequence:
-            QtWidgets.QMessageBox.information(
-                self, "提示", "尚未配置顺序上电列表，请在「电源设置」中设置 power_on_sequence。"
+    @staticmethod
+    def _format_seq_error_zh(error_message):
+        """将顺序上下电错误信息转为中文提示"""
+        if error_message.startswith("Device not found:"):
+            dev_id = error_message.split(":", 1)[1].strip()
+            return f"设备 {dev_id} 未注册"
+        if error_message.startswith("Remote disabled:"):
+            dev_id = error_message.split(":", 1)[1].strip()
+            return f"设备 {dev_id} 未启用远程控制"
+        if error_message.startswith("No power-on interface:"):
+            dev_id = error_message.split(":", 1)[1].strip()
+            return f"设备 {dev_id} 不支持上电接口"
+        if error_message.startswith("No power-off interface:"):
+            dev_id = error_message.split(":", 1)[1].strip()
+            return f"设备 {dev_id} 不支持下电接口"
+        if ": " in error_message:
+            dev_id, detail = error_message.split(": ", 1)
+            detail_map = {
+                "Port not connected": "串口未连接",
+                "Operation timed out": "操作超时",
+            }
+            return f"设备 {dev_id} 操作失败：{detail_map.get(detail, detail)}"
+        return error_message
+
+    def _on_seq_finished(self, is_power_on, success, error_message):
+        """顺序上下电完成后的 UI 回调（主线程）"""
+        btn = self.seq_on_btn if is_power_on else self.seq_off_btn
+        btn.setEnabled(True)
+        if not success:
+            title = "顺序上电失败" if is_power_on else "顺序下电失败"
+            QtWidgets.QMessageBox.warning(
+                self, title, self._format_seq_error_zh(error_message)
             )
+
+    def _run_seq_power(self, is_power_on):
+        """在后台线程执行顺序上下电，遇错立即停止"""
+        if is_power_on:
+            sequence, _ = Tool.read_power_sequences()
+        else:
+            _, sequence = Tool.read_power_sequences()
+        if not sequence:
+            hint = (
+                "尚未配置顺序上电列表，请在「电源设置」中设置 power_on_sequence。"
+                if is_power_on else
+                "尚未配置顺序下电列表，请在「电源设置」中设置 power_off_sequence。"
+            )
+            QtWidgets.QMessageBox.information(self, "提示", hint)
             return
-        self.seq_on_btn.setEnabled(False)
+        btn = self.seq_on_btn if is_power_on else self.seq_off_btn
+        btn.setEnabled(False)
 
         def _do():
-            for dev_id in sequence:
-                dev = Tool.get_power_device(dev_id)
-                if dev is None:
-                    print(f"[顺序上电] 设备 {dev_id} 未注册，跳过")
-                    continue
-                if hasattr(dev, "invoke_tcp_power_on"):
-                    result = dev.invoke_tcp_power_on()
-                    if not result[0]:
-                        print(f"[顺序上电] 设备 {dev_id} 上电失败: {result[1]}")
-                else:
-                    print(f"[顺序上电] 设备 {dev_id} 不支持远程上电接口，跳过")
-                time.sleep(2)
-            QtWidgets.QApplication.instance().processEvents()
-            self.seq_on_btn.setEnabled(True)
+            ok, err = Tool.exec_power_sequence(
+                sequence, power_on=is_power_on, check_remote=False
+            )
+            label = "顺序上电" if is_power_on else "顺序下电"
+            if not ok:
+                print(f"[{label}] 已停止: {err}")
+            self._seq_ui_signal.emit(is_power_on, ok, err or "")
 
         threading.Thread(target=_do, daemon=True).start()
+
+    def _seq_power_on(self):
+        """一键顺序上电：按 power_on_sequence 顺序依次调用各电源的上电接口"""
+        self._run_seq_power(True)
 
     def _seq_power_off(self):
         """一键顺序下电：按 power_off_sequence 顺序依次调用各电源的下电接口"""
-        _, sequence = Tool.read_power_sequences()
-        if not sequence:
-            QtWidgets.QMessageBox.information(
-                self, "提示", "尚未配置顺序下电列表，请在「电源设置」中设置 power_off_sequence。"
-            )
-            return
-        self.seq_off_btn.setEnabled(False)
-
-        def _do():
-            for dev_id in sequence:
-                dev = Tool.get_power_device(dev_id)
-                if dev is None:
-                    print(f"[顺序下电] 设备 {dev_id} 未注册，跳过")
-                    continue
-                if hasattr(dev, "invoke_tcp_power_off"):
-                    result = dev.invoke_tcp_power_off()
-                    if not result[0]:
-                        print(f"[顺序下电] 设备 {dev_id} 下电失败: {result[1]}")
-                else:
-                    print(f"[顺序下电] 设备 {dev_id} 不支持远程下电接口，跳过")
-                time.sleep(2)
-            QtWidgets.QApplication.instance().processEvents()
-            self.seq_off_btn.setEnabled(True)
-
-        threading.Thread(target=_do, daemon=True).start()
+        self._run_seq_power(False)
 
     def show_power_settings(self):
         dlg = PowerSettingsDialog(self)
@@ -234,6 +251,18 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
 
     def CurrentWarning(self, str1, str2, str3):
         QtWidgets.QMessageBox.warning(self, f"{str1}警告", f"电流过高，请检查电源电流是否过高，当前{str2}电流为{str3}A")
+
+    def start_info_square(self, name, v1, i1, v2, i2):
+        sender = self.sender()
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            f'{name}',
+            f"当前设置是否正确？\nCH1：{v1}V / {i1}A\nCH2：{v2}V / {i2}A",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if sender:
+            sender.pressNo = reply != QtWidgets.QMessageBox.Yes
 
     def start_info(self, name, v, i):
         sender = self.sender()
@@ -296,6 +325,9 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
 
         #绑定页面与按钮
         BtnCustom.clicked.connect( lambda: self.leftBtnCallback(BtnCustom.objectName()) )
+
+        if isinstance(widgetObj, SquarePower):
+            widgetObj.start_signal.connect(self.start_info_square)
 
     def DelSubWin(self,widgetObj):
         #删除左侧按钮
