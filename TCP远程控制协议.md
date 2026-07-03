@@ -2,26 +2,26 @@
 
 | 项目 | 说明 |
 |------|------|
-| 协议版本 | v1.1（对应软件 v1.1.2+） |
+| 协议版本 | v1.2（对应软件 v1.2.0+） |
 | 传输层 | TCP |
 | 编码 | UTF-8 |
 | 消息格式 | JSON，以换行符 `\n` 作为帧分隔符 |
 | 实现模块 | `Projects/电源控制/TCPServer.py` |
-| 适用设备 | 长条电源（`type: long`），方形电源暂不支持远程控制 |
+| 适用设备 | 长条电源（`type: long`）、方形电源（`type: square`） |
 
 ---
 
 ## 1. 概述
 
-本协议用于上位机测试软件与**光学头电源控制**程序之间的远程通信。客户端通过 TCP 连接发送 JSON 命令，服务端解析后控制指定电源设备（串口连接、输出开关、读数、电压拉偏等），并以 JSON 响应返回执行结果。
+本协议用于上位机测试软件与**光学头电源控制**程序之间的远程通信。客户端通过 TCP 连接发送 JSON 命令，服务端解析后控制指定电源设备，并以 JSON 响应返回执行结果。
 
 ### 1.1 通信模型
 
 ```
-┌─────────────┐    TCP (JSON + \n)    ┌──────────────────────────┐
-│  远程客户端  │ ◄──────────────────► │  光学头电源控制软件       │
-│ (测试终端等) │                       │  TCPServer → 长条电源实例 │
-└─────────────┘                       └──────────────────────────┘
+┌─────────────┐    TCP (JSON + \n)    ┌──────────────────────────────────────┐
+│  远程客户端  │ ◄──────────────────► │  光学头电源控制软件                    │
+│ (测试终端等) │                       │  TCPServer → 长条电源 / 方形电源实例   │
+└─────────────┘                       └──────────────────────────────────────┘
 ```
 
 - **请求-响应模式**：每条命令对应一条响应，客户端应等待响应后再发送下一条（推荐）。
@@ -77,6 +77,10 @@ auto_connect = True
 {"opcode":"PowerON","parameter":{"device":"GXT"}}
 ```
 
+```json
+{"opcode":"SeqPowerON"}
+```
+
 ### 2.2 响应帧
 
 每条响应同样为**一行** UTF-8 JSON 字符串，以 `\n` 结尾。
@@ -109,7 +113,7 @@ auto_connect = True
 
 ## 3. 设备标识（多电源场景）
 
-当系统中配置了多个长条电源时，通过 `parameter` 中的 `device` 字段指定目标设备。
+系统支持**长条电源**（`type: long`）和**方形电源**（`type: square`）混合配置。两种类型均通过统一的设备注册表（`device_id → 实例`）管理，远程命令通过 `device` 字段定位目标设备。
 
 | 字段 | 类型 | 别名 | 说明 |
 |------|------|------|------|
@@ -117,24 +121,29 @@ auto_connect = True
 
 **设备解析规则**：
 
-1. 若 `parameter` 中提供了 `device` / `Device`：按 ID 查找对应长条电源实例。
-2. 若未提供：使用第一个 `remote: true` 的长条电源作为默认设备。
+1. 若 `parameter` 中提供了 `device` / `Device`：在统一注册表中查找（长条和方形均可）。
+2. 若未提供：使用第一个 `remote: true` 的长条电源作为默认设备（向后兼容）。
 3. 若仍无可用设备：返回 `No power control board available`。
 
 **设备必须满足**：
 
-- 在 `power_config.json` 中 `type` 为 `"long"`；
-- `remote` 为 `true`（电源设置界面可配置）。
+- 在 `power_config.json` 中存在对应 `id`；
+- `remote` 为 `true`（在「电源设置」界面可配置）。
+
+> **注意**：`ConnectDevice`、`CurrentValue`、`DownDeflection` 为长条电源专用命令；
+> `PowerON`、`PowerOFF`、`SeqPowerON`、`SeqPowerOFF` 支持长条和方形两种类型。
 
 ### 3.1 预设场景设备 ID 参考
 
-| 场景 ID | 设备 ID | 名称 | 默认电压 | 默认电流 |
-|---------|---------|------|----------|----------|
-| `gxt_only` | `GXT` | 光学头电源 | 42.0 V | 3.5 A |
-| `gxt_xw` | `GXT` | 光学头电源 | 42.0 V | 3.5 A |
-| `gxt_xw` | `GF` | XW光放电源 | 5.4 V | 10.0 A |
-| `gxt_fgw` | `GXT` | 光学头电源 | 42.0 V | 3.5 A |
-| `gxt_fgw` | `GF` | FGW光放电源 | 4.4 V | 13.5 A |
+| 场景 ID | 设备 ID | 类型 | 名称 | 默认电压 | 默认电流 |
+|---------|---------|------|------|----------|----------|
+| `gxt_only` | `GXT` | long | 光学头电源 | 42.0 V | 3.5 A |
+| `gxt_xw` | `GXT` | long | 光学头电源 | 42.0 V | 3.5 A |
+| `gxt_xw` | `GF` | long | XW光放电源 | 5.4 V | 10.0 A |
+| `gxt_xw` | `SQ1` | square | 方形电源1 | CH1: 12V / CH2: 5V | — |
+| `gxt_xw` | `SQ2` | square | 方形电源2 | CH1: 5V / CH2: 5V | — |
+| `gxt_fgw` | `GXT` | long | 光学头电源 | 42.0 V | 3.5 A |
+| `gxt_fgw` | `GF` | long | FGW光放电源 | 4.4 V | 13.5 A |
 
 ---
 
@@ -142,14 +151,16 @@ auto_connect = True
 
 ### 4.1 总览
 
-| opcode | 需要设备 | 说明 |
-|--------|----------|------|
-| `check` | 否 | 查询软件版本 |
-| `ConnectDevice` | 是 | 打开串口连接电源 |
-| `PowerON` | 是 | 上电（设置默认 V/I 并开启输出） |
-| `PowerOFF` | 是 | 下电（关闭输出） |
-| `CurrentValue` | 是 | 读取当前输出电压、电流 |
-| `DownDeflection` | 是 | 电压拉偏测试 |
+| opcode | 需要设备 | 适用类型 | 阻塞 | 说明 |
+|--------|----------|----------|------|------|
+| `check` | 否 | — | 是 | 查询软件版本 |
+| `ConnectDevice` | 是 | long | 是 | 打开串口连接长条电源 |
+| `PowerON` | 是 | long / square | 是 | 单台上电（注入预设 V/I 后开启输出） |
+| `PowerOFF` | 是 | long / square | 是 | 单台下电（关闭输出） |
+| `CurrentValue` | 是 | long | 是 | 读取当前输出电压、电流 |
+| `DownDeflection` | 是 | long | 否（异步） | 电压拉偏测试 |
+| `SeqPowerON` | 否 | long / square | 是 | 按配置顺序依次上电所有设备 |
+| `SeqPowerOFF` | 否 | long / square | 是 | 按配置顺序依次下电所有设备 |
 
 ---
 
@@ -168,7 +179,7 @@ auto_connect = True
 ```json
 {
   "IsSuccessful": true,
-  "Value": "v1.1.2",
+  "Value": "v1.2.0",
   "ErrorMessage": "Null"
 }
 ```
@@ -177,9 +188,9 @@ auto_connect = True
 
 ---
 
-### 4.3 `ConnectDevice` — 连接串口
+### 4.3 `ConnectDevice` — 连接串口（长条电源专用）
 
-打开指定电源对应的串口。等效于界面「打开串口」按钮。
+打开指定长条电源对应的串口。等效于界面「打开串口」按钮。
 
 **请求**
 
@@ -208,16 +219,19 @@ auto_connect = True
 |--------------|------|
 | `Device not found: <id>` | 设备 ID 不存在 |
 | `Device remote control disabled: <id>` | 该设备未启用远程控制 |
-| `No power control board available` | 无长条电源实例 |
+| `No power control board available` | 无电源实例 |
+| `Device does not support remote connect` | 目标设备为方形电源，不支持此命令 |
 | 串口打开失败（空字符串或异常信息） | 串口被占用、端口号错误或设备未连接 |
 
 ---
 
-### 4.4 `PowerON` — 上电
+### 4.4 `PowerON` — 单台上电
 
-在串口已连接的前提下：发送预设电压/电流 → 启动数据采集 → 开启电源输出。等效于界面「开始输出」，但**不弹出确认对话框**。
+在串口已连接的前提下，向指定电源注入预设电压/电流，然后开启输出。等效于界面「开始输出」，但**不弹出确认对话框**。
 
-**前置条件**：串口已连接（可先调用 `ConnectDevice`）。
+**适用类型**：长条电源、方形电源（均支持）
+
+**前置条件**：目标电源串口已连接。
 
 **请求**
 
@@ -245,18 +259,21 @@ auto_connect = True
 | ErrorMessage | 原因 |
 |--------------|------|
 | `Port not connected` | 串口未连接 |
+| `Device does not support remote power-on` | 设备实例未实现上电接口 |
 | `Operation timed out` | 主线程调度超时（默认 30 s） |
 
 **行为说明**
 
-- 电压、电流取自 `power_config.json` 中该设备的 `default_voltage`、`default_current`。
-- 上电后自动开始电压/电流采集，数据写入 `./电源采集数据/<设备名>_<时间戳>.csv`。
+- **长条电源**：发送 `default_voltage`、`default_current`，等待 1 秒后开启输出，同时启动电压/电流采集线程。
+- **方形电源**：发送 CH1/CH2 的预设电压/电流（并联模式下仅发 CH1），等待 1 秒后开启输出，同时启动采集线程。
 
 ---
 
-### 4.5 `PowerOFF` — 下电
+### 4.5 `PowerOFF` — 单台下电
 
-关闭电源输出并停止采集。等效于界面「停止输出」（远程模式下不触发 FTP 上传）。
+关闭指定电源的输出并停止采集。
+
+**适用类型**：长条电源、方形电源（均支持）
 
 **请求**
 
@@ -279,11 +296,18 @@ auto_connect = True
 }
 ```
 
+**常见错误**
+
+| ErrorMessage | 原因 |
+|--------------|------|
+| `Device does not support remote power-off` | 设备实例未实现下电接口 |
+| `Operation timed out` | 主线程调度超时（默认 30 s） |
+
 ---
 
-### 4.6 `CurrentValue` — 读取电压电流
+### 4.6 `CurrentValue` — 读取电压电流（长条电源专用）
 
-返回电源当前**输出**电压与电流（来自采集线程缓存值 `CurrentV` / `CurrentI`）。
+返回电源当前**输出**电压与电流（来自采集线程缓存值）。
 
 > 若未上电或未开启采集，返回值可能为 `0`。
 
@@ -316,9 +340,15 @@ auto_connect = True
 | `Voltage` | number | V | 当前输出电压 |
 | `Current` | number | A | 当前输出电流 |
 
+**常见错误**
+
+| ErrorMessage | 原因 |
+|--------------|------|
+| `Device does not support CurrentValue query` | 目标设备为方形电源，不支持此命令 |
+
 ---
 
-### 4.7 `DownDeflection` — 电压拉偏
+### 4.7 `DownDeflection` — 电压拉偏（长条电源专用）
 
 启动自动电压拉偏测试。等效于界面「降至 36V / 升至 45V / 回到 42V」按钮，远程模式下**不弹窗提示**。
 
@@ -366,6 +396,103 @@ auto_connect = True
 |--------------|------|
 | `Missing parameter: Con` | 未提供 `Con` 参数 |
 | `Serial port not connected` | 串口未连接 |
+| `Device does not support DownDeflection` | 目标设备为方形电源，不支持此命令 |
+
+---
+
+### 4.8 `SeqPowerON` — 顺序上电
+
+按 `power_config.json` 中 `power_on_sequence` 列表的顺序，依次对各电源执行上电操作。**阻塞直至所有设备完成后返回**，客户端可获得每台设备的成功/失败汇总。
+
+**适用类型**：长条电源、方形电源（均支持）
+
+**前置条件**：`power_config.json` 中 `power_on_sequence` 不为空；列出的每台设备串口已连接。
+
+**配置示例（`power_config.json`）**
+
+```json
+{
+  "power_on_sequence": ["LONG1", "SQ2", "SQ3", "SQ4"],
+  "power_off_sequence": ["SQ4", "SQ3", "SQ2", "LONG1"]
+}
+```
+
+> 设备 ID 使用英文逗号或中文逗号分隔均可（软件自动标准化）。
+
+**请求**
+
+```json
+{"opcode":"SeqPowerON"}
+```
+
+参数字段可省略，无需指定 `device`。
+
+**成功响应**（所有设备均上电成功）
+
+```json
+{
+  "IsSuccessful": true,
+  "Value": "Null",
+  "ErrorMessage": "Null"
+}
+```
+
+**部分失败响应**（某台设备上电失败，其余设备继续执行）
+
+```json
+{
+  "IsSuccessful": false,
+  "Value": "Null",
+  "ErrorMessage": "LONG1: Port not connected; SQ3: Operation timed out"
+}
+```
+
+`ErrorMessage` 为分号分隔的各设备错误列表，未列出的设备均成功。
+
+**常见错误**
+
+| ErrorMessage | 原因 |
+|--------------|------|
+| `power_on_sequence is empty, configure it in power_config.json` | 未配置上电序列 |
+| `Device not found: <id>` | 序列中的设备 ID 未注册（未加载或 ID 拼写错误） |
+| `Remote disabled: <id>` | 该设备 `remote` 为 `false` |
+| `No power-on interface: <id>` | 设备实例不支持远程上电 |
+| `<id>: Port not connected` | 该设备串口未连接 |
+| `<id>: Operation timed out` | 该设备主线程调度超时 |
+
+---
+
+### 4.9 `SeqPowerOFF` — 顺序下电
+
+按 `power_config.json` 中 `power_off_sequence` 列表的顺序，依次对各电源执行下电操作。**阻塞直至所有设备完成后返回**。
+
+**适用类型**：长条电源、方形电源（均支持）
+
+**请求**
+
+```json
+{"opcode":"SeqPowerOFF"}
+```
+
+**成功响应**
+
+```json
+{
+  "IsSuccessful": true,
+  "Value": "Null",
+  "ErrorMessage": "Null"
+}
+```
+
+**常见错误**
+
+| ErrorMessage | 原因 |
+|--------------|------|
+| `power_off_sequence is empty, configure it in power_config.json` | 未配置下电序列 |
+| `Device not found: <id>` | 序列中的设备 ID 未注册 |
+| `Remote disabled: <id>` | 该设备 `remote` 为 `false` |
+| `No power-off interface: <id>` | 设备实例不支持远程下电 |
+| `<id>: Operation timed out` | 该设备主线程调度超时 |
 
 ---
 
@@ -378,7 +505,7 @@ auto_connect = True
 | `Missing opcode` | 请求 JSON 中无 `opcode` 字段 |
 | `Unknown command: <opcode>` | 不支持的命令名 |
 | `Format error` | JSON 格式非法 |
-| `No power control board available` | 系统中无长条电源实例 |
+| `No power control board available` | 系统中无任何电源实例 |
 | `Device not found: <id>` | 指定设备 ID 不存在 |
 | `Device remote control disabled: <id>` | 设备 `remote` 为 `false` |
 | `Command execution error: <detail>` | 服务端内部异常 |
@@ -388,7 +515,7 @@ auto_connect = True
 
 ## 6. 推荐调用流程
 
-### 6.1 基本上下电
+### 6.1 单台电源上下电
 
 ```
 客户端                          服务端
@@ -398,13 +525,13 @@ auto_connect = True
   │──── {"opcode":"check"} ──────►│
   │◄─── 版本响应 ─────────────────│
   │                               │
-  │──── ConnectDevice ───────────►│  打开串口
+  │──── ConnectDevice ───────────►│  打开串口（长条电源）
   │◄─── 成功 ─────────────────────│
   │                               │
-  │──── PowerON ─────────────────►│  上电 + 采集
+  │──── PowerON ─────────────────►│  注入预设V/I → 开启输出
   │◄─── 成功 ─────────────────────│
   │                               │
-  │──── CurrentValue (可选) ─────►│  读电压电流
+  │──── CurrentValue (可选) ─────►│  读电压电流（长条专用）
   │◄─── {Voltage, Current} ───────│
   │                               │
   │──── PowerOFF ────────────────►│  下电
@@ -413,7 +540,32 @@ auto_connect = True
   │──── 断开连接 ─────────────────►│
 ```
 
-### 6.2 拉偏测试
+### 6.2 顺序上下电（推荐多电源场景）
+
+```
+客户端                          服务端
+  │                               │
+  │──── TCP 连接 ────────────────►│
+  │                               │
+  │──── {"opcode":"check"} ──────►│  确认连通性
+  │◄─── 版本响应 ─────────────────│
+  │                               │
+  │──── SeqPowerON ──────────────►│  按 power_on_sequence 顺序逐台上电
+  │                               │  （阻塞，直至全部完成）
+  │◄─── 成功/失败汇总 ────────────│
+  │                               │
+  │  ····测试进行中····           │
+  │                               │
+  │──── SeqPowerOFF ─────────────►│  按 power_off_sequence 顺序逐台下电
+  │                               │  （阻塞，直至全部完成）
+  │◄─── 成功/失败汇总 ────────────│
+  │                               │
+  │──── 断开连接 ─────────────────►│
+```
+
+> **注意**：`SeqPowerON` / `SeqPowerOFF` 在服务端会阻塞当前 TCP 连接线程直至所有电源操作完成。每台电源上电约需 1–2 秒，多台设备时总耗时较长，请适当调大客户端的 socket 超时（建议 `设备数 × 5 s` 以上）。
+
+### 6.3 拉偏测试
 
 ```
 ConnectDevice → PowerON → DownDeflection(Con=Lower/Higher/Normal)
@@ -423,67 +575,135 @@ ConnectDevice → PowerON → DownDeflection(Con=Lower/Higher/Normal)
 
 ---
 
-## 7. 客户端示例
+## 7. 顺序上下电配置说明
 
-### 7.1 Python
+顺序上下电序列在「电源设置」界面或直接编辑 `power_config.json` 中配置：
+
+```json
+{
+  "power_on_sequence":  ["LONG1", "SQ2", "SQ3", "SQ4"],
+  "power_off_sequence": ["SQ4",   "SQ3", "SQ2", "LONG1"]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `power_on_sequence` | 上电顺序，元素为设备 `id`，从前到后依次执行 |
+| `power_off_sequence` | 下电顺序，通常与上电顺序相反，从前到后依次执行 |
+
+**注意事项**：
+
+- 序列中的 `id` 必须与 `devices[].id` 完全一致（大小写敏感）。
+- 对应设备的 `remote` 必须为 `true`，否则该设备会被跳过并在 `ErrorMessage` 中报告。
+- 软件自动兼容中文逗号 `，` 和英文逗号 `,` 作为分隔符。
+- 修改配置后**无需重启**：`SeqPowerON` / `SeqPowerOFF` 每次执行时实时读取配置文件。
+
+---
+
+## 8. 客户端示例
+
+### 8.1 Python — 顺序上下电
 
 ```python
 import json
 import socket
 
 HOST = "127.0.0.1"
-PORT = 4070
+PORT = 10002
+
+
+def send_cmd(sock, opcode, parameter=None):
+    req = {"opcode": opcode}
+    if parameter is not None:
+        req["parameter"] = parameter
+    sock.sendall((json.dumps(req, ensure_ascii=False) + "\n").encode("utf-8"))
+    data = b""
+    while b"\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("连接已关闭")
+        data += chunk
+    line, _ = data.split(b"\n", 1)
+    return json.loads(line.decode("utf-8"))
+
+
+# 多电源顺序上下电示例（超时设置为 60 秒以应对多台设备）
+with socket.create_connection((HOST, PORT), timeout=60) as sock:
+    print(send_cmd(sock, "check"))
+
+    # 顺序上电
+    result = send_cmd(sock, "SeqPowerON")
+    print("顺序上电结果：", result)
+    if not result["IsSuccessful"]:
+        print("警告：部分设备上电失败：", result["ErrorMessage"])
+
+    # ... 执行测试 ...
+
+    # 顺序下电
+    result = send_cmd(sock, "SeqPowerOFF")
+    print("顺序下电结果：", result)
+```
+
+### 8.2 Python — 单台电源上下电
+
+```python
+import json
+import socket
+
+HOST = "127.0.0.1"
+PORT = 10002
 DEVICE = "GXT"
 
 
 def send_cmd(sock, opcode, parameter=None):
-  req = {"opcode": opcode}
-  if parameter is not None:
-    req["parameter"] = parameter
-  sock.sendall((json.dumps(req, ensure_ascii=False) + "\n").encode("utf-8"))
-  data = b""
-  while b"\n" not in data:
-    chunk = sock.recv(4096)
-    if not chunk:
-      raise ConnectionError("连接已关闭")
-    data += chunk
-  line, _ = data.split(b"\n", 1)
-  return json.loads(line.decode("utf-8"))
+    req = {"opcode": opcode}
+    if parameter is not None:
+        req["parameter"] = parameter
+    sock.sendall((json.dumps(req, ensure_ascii=False) + "\n").encode("utf-8"))
+    data = b""
+    while b"\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("连接已关闭")
+        data += chunk
+    line, _ = data.split(b"\n", 1)
+    return json.loads(line.decode("utf-8"))
 
 
 with socket.create_connection((HOST, PORT), timeout=10) as sock:
-  print(send_cmd(sock, "check"))
-  print(send_cmd(sock, "ConnectDevice", {"device": DEVICE}))
-  print(send_cmd(sock, "PowerON", {"device": DEVICE}))
-  print(send_cmd(sock, "CurrentValue", {"device": DEVICE}))
-  print(send_cmd(sock, "DownDeflection", {"device": DEVICE, "Con": "Lower"}))
-  print(send_cmd(sock, "PowerOFF", {"device": DEVICE}))
+    print(send_cmd(sock, "check"))
+    print(send_cmd(sock, "ConnectDevice", {"device": DEVICE}))
+    print(send_cmd(sock, "PowerON",       {"device": DEVICE}))
+    print(send_cmd(sock, "CurrentValue",  {"device": DEVICE}))
+    print(send_cmd(sock, "DownDeflection", {"device": DEVICE, "Con": "Lower"}))
+    print(send_cmd(sock, "PowerOFF",      {"device": DEVICE}))
 ```
 
-### 7.2 命令行（PowerShell + netcat 替代）
-
-可使用任意支持 TCP 的工具发送单行 JSON。例如用 Python 一行命令：
+### 8.3 命令行快速测试
 
 ```powershell
-python -c "import socket,json;s=socket.create_connection(('127.0.0.1',4070));s.sendall(b'{\"opcode\":\"check\"}\n');print(s.recv(4096).decode())"
+python -c "import socket,json; s=socket.create_connection(('127.0.0.1',10002)); s.sendall(b'{\"opcode\":\"check\"}\n'); print(s.recv(4096).decode())"
 ```
 
 ---
 
-## 8. 注意事项
+## 9. 注意事项
 
 1. **串口独占**：同一电源串口只能被一个进程占用；远程 `ConnectDevice` 前请确保串口未被其他程序打开。
 2. **线程安全**：电源操作通过 Qt 主线程调度执行，单条命令最长等待 30 秒。
-3. **采集依赖**：`CurrentValue` 返回的是采集线程缓存值；上电后建议等待约 1 秒再读取。
-4. **拉偏异步**：`DownDeflection` 立即返回，实际拉偏在后台进行，需自行轮询电压。
-5. **安全限流**：电流超过 `power_config.json` 中 `current_limit` 时，软件会自动停止采集并弹窗告警（本地界面）。
-6. **配置生效**：修改 `power_config.json` 或 `Auto_config.ini` 后需重启软件；可通过 `check` 命令确认版本与连通性。
+3. **顺序上下电阻塞**：`SeqPowerON` / `SeqPowerOFF` 会在所有设备完成后才返回，客户端 socket 超时须设置充裕（建议 `设备数 × 5 s` 以上）。
+4. **采集依赖**：`CurrentValue` 返回的是采集线程缓存值；上电后建议等待约 1 秒再读取。
+5. **拉偏异步**：`DownDeflection` 立即返回，实际拉偏在后台进行，需自行轮询电压。
+6. **安全限流**：电流超过 `power_config.json` 中 `current_limit` 时，软件会自动停止采集并弹窗告警（本地界面）。
+7. **方形电源并联模式**：方形电源处于并联模式（GPD-3303S Tracking 并联）时，上电前软件会自动读取状态并只发送 CH1 的设置，无需客户端特殊处理。
+8. **配置生效**：修改 `Auto_config.ini` 后需重启软件；`power_config.json` 中的序列配置实时生效，无需重启。
 
 ---
 
-## 9. 修订记录
+## 10. 修订记录
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.0 | 2026-06-09 | 首版：基于 TCPServer.py（v1.1.2）整理 JSON 远程控制协议 |
 | v1.1 | 2026-06-09 | TCPServer 启动时读取 `Auto_config.ini`；移除旧版二进制协议 |
+| v1.2 | 2026-07-02 | 新增 `SeqPowerON` / `SeqPowerOFF` 顺序上下电命令；`PowerON` / `PowerOFF` 扩展支持方形电源；补充方形电源并联模式说明；更新命令表、流程图与客户端示例 |
