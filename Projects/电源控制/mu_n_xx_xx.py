@@ -155,10 +155,15 @@ class MUNPowerSupply(object):
             self._reset_buffers()
             self.serial.write(request)
             self.serial.flush()
-            response = self._read_exact(expected_size)
+            # 先读 2 字节头（从机地址 + 功能码），据此判断正常帧还是异常帧。
+            # 异常响应固定 5 字节（地址+(功能码|0x80)+异常码+CRC2），
+            # 若按正常长度整帧读取会因等不到足够字节而超时，导致异常码判断永不可达。
+            header = self._read_exact(2)
+            if header[1] & 0x80:
+                response = header + self._read_exact(3)
+            else:
+                response = header + self._read_exact(expected_size - 2)
 
-        if response[:-2] == b"":
-            raise RuntimeError("Empty response")
         response_crc = response[-2:]
         expected_crc = self._crc16(response[:-2])
         if response_crc != expected_crc:

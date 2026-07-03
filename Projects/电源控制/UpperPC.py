@@ -958,24 +958,38 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
                 widgets.append(widget_obj)
         return widgets
 
-    def runBatchPowerAction(self, action_name, action_func_name):
-        widgets = self.iterAllPowerWidgets()
-        if not widgets:
-            QtWidgets.QMessageBox.warning(self, "提示", "当前没有电源设备")
+    def _is_widget_alive(self, widget_obj):
+        """判断电源控件底层 Qt 对象是否仍有效，避免访问已删除对象导致崩溃。"""
+        if widget_obj is None:
             return False
+        try:
+            from PyQt5 import sip
+            return not sip.isdeleted(widget_obj)
+        except Exception:
+            return True
 
+    def runBatchPowerAction(self, action_name, action_func_name):
+        # 先原子化禁用总控按钮，再执行任何可能触发 processEvents 的操作，杜绝连点导致的并行序列
         self.setGlobalControlButtonsEnabled(False)
         original_button_text = self.setBatchActionBusyText(action_name)
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
+            widgets = self.iterAllPowerWidgets()
+            if not widgets:
+                QtWidgets.QMessageBox.warning(self, "提示", "当前没有电源设备")
+                return False
             success_items = []
             failed_items = []
             skipped_items = []
 
             for widget_obj in widgets:
+                if not self._is_widget_alive(widget_obj):
+                    continue
                 self.statusBar().showMessage(f"{action_name}：正在处理 {widget_obj.name}")
                 QtWidgets.QApplication.processEvents()
 
+                if not self._is_widget_alive(widget_obj):
+                    continue
                 if not getattr(widget_obj, "isConnected", False):
                     skipped_items.append(f"{widget_obj.name}: 未连接")
                     QtWidgets.QApplication.processEvents()
@@ -1576,6 +1590,13 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow):  # 主窗口只负责处�
         BtnCustom.clicked.connect( lambda: self.leftBtnCallback(BtnCustom.objectName()) )
 
     def DelSubWin(self,widgetObj):
+        # 先停止该控件的采集线程/定时器并关闭串口，避免删除后线程与串口泄漏
+        try:
+            if widgetObj is not None and hasattr(widgetObj, "cleanup"):
+                widgetObj.cleanup()
+        except Exception:
+            pass
+
         # 删除左侧按钮
         BtnCustom=self.leftBtnDict["Btn"+widgetObj.name]
         self.leftlayout.removeWidget(BtnCustom)

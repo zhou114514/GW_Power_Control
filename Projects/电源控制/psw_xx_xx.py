@@ -129,8 +129,40 @@ class psw_xx_xx(object):
         self._write_command(command)
         ret = self.serial.readline()
         if ret == b"":
-            raise RuntimeError("No response for command: %s" % command)
+            # 空响应视为通信异常，交给 _auto_reconnect 重连重试（原来抛 RuntimeError 不会触发重连）
+            raise serial.SerialException("No response for command: %s" % command)
         return ret.decode(errors="ignore").strip()
+
+    def _read_measurement(self, command):
+        """
+        发送一条测量指令并解析出一个浮点数。
+        空响应或非数字响应都视为通信异常（SerialException），
+        以便 _auto_reconnect 触发重连重试，而不是抛出会直接杀死采集线程的 ValueError。
+        """
+        self._write_command(command)
+        ret = self.serial.readline()
+        text = ret.decode(errors="ignore").strip() if ret else ""
+        if not text:
+            raise serial.SerialException("No response for command: %s" % command)
+        try:
+            return float(text)
+        except ValueError:
+            raise serial.SerialException(
+                "Invalid response for %s: %r" % (command, text)
+            )
+
+    def _current_setpoints(self):
+        """
+        返回设备当前的 (电压, 电流) 设定值。
+        优先直接读设备（避免用过期缓存），读失败时退回本地缓存；
+        两者都拿不到时向上抛出，由 _auto_reconnect 处理。
+        """
+        try:
+            return self._query_apply()
+        except Exception:
+            if self.voltage is not None and self.current is not None:
+                return self.voltage, self.current
+            raise
 
     def _query_apply(self):
         ret = self._query("APPLy?")
@@ -177,15 +209,15 @@ class psw_xx_xx(object):
     @_auto_reconnect
     def setCurrent(self, current):
         """
-        APPLy self.voltage,current
+        APPLy <设备当前电压>,current
+        先读设备当前电压设定值再一起下发，避免用过期缓存把电压回滚。
         """
         current = float(current)
         self.isValidFloat(current)
         with self.lock:
-            voltage = self.voltage
-            if voltage is None:
-                voltage, _ = self._query_apply()
+            voltage, _ = self._current_setpoints()
             self._write_command("APPLy %.3f,%.3f" % (voltage, current))
+            self.voltage = voltage
             self.current = current
 
         # err = self.getError()
@@ -212,16 +244,16 @@ class psw_xx_xx(object):
     @_auto_reconnect
     def setVoltage(self, voltage):
         """
-        APPLy voltage,self.current
+        APPLy voltage,<设备当前电流>
+        先读设备当前电流设定值再一起下发，避免用过期缓存把电流回滚。
         """
         voltage = float(voltage)
         self.isValidFloat(voltage)
         with self.lock:
-            current = self.current
-            if current is None:
-                _, current = self._query_apply()
+            _, current = self._current_setpoints()
             self._write_command("APPLy %.3f,%.3f" % (voltage, current))
             self.voltage = voltage
+            self.current = current
 
         # err = self.getError()
         # if err != b'+0,"No error"':
@@ -241,33 +273,17 @@ class psw_xx_xx(object):
         MEASure[:SCALar]:CURRent[:DC]?
         """
         with self.lock:
-            self.serial.write(b'MEASure:CURRent?\r\n')
-            self.serial.flush()
-            ret = self.serial.readline()
-
-            # err = self.getError()
-            # if err != b'+0,"No error"':
-            #     raise RuntimeError(err)
-
-            return float(ret.decode())
+            return self._read_measurement("MEASure:CURRent?")
 
 
     @_auto_reconnect
     def getVoltageOutput(self):
         """
-        MEASure[:SCALar]:VOLTage[:DC]? 
+        MEASure[:SCALar]:VOLTage[:DC]?
         """
         with self.lock:
-            self.serial.write(b'MEASure:VOLTage?\n')
-            self.serial.flush()
-            ret = self.serial.readline()
+            return self._read_measurement("MEASure:VOLTage?")
 
-            # err = self.getError()
-            # if err != b'+0,"No error"':
-            #     raise RuntimeError(err)
-
-            return float(ret.decode())
-    
 
     @_auto_reconnect
     def getOutput(self):
@@ -275,22 +291,10 @@ class psw_xx_xx(object):
         MEASure[:SCALar]:VOLTage[:DC]?\n
         MEASure[:SCALar]:CURRent[:DC]?\n
         """
-        # ntime = time.time()
         with self.lock:
-            ret = {"电压":0, "电流":0}
-            self.serial.write(b'MEASure:VOLTage?\n')
-            v = self.serial.readline()
-            self.serial.write(b'MEASure:CURRent?\n')
-            i = self.serial.readline()
-            # print(time.time() - ntime)
-
-            ret["电压"], ret["电流"] = float(v.decode()), float(i.decode())
-
-            # err = self.getError()
-            # if err != b'+0,"No error"':
-            #     raise RuntimeError(err)
-
-            return [ret["电压"], ret["电流"]]
+            voltage = self._read_measurement("MEASure:VOLTage?")
+            current = self._read_measurement("MEASure:CURRent?")
+            return [voltage, current]
 
 
     @_auto_reconnect

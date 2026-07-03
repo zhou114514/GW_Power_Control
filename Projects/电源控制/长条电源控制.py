@@ -71,6 +71,8 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
         self.StopFlag = True
         self.pressNo = False
+        # 输出开/关切换互斥标志：避免 1 秒稳定等待期间重复触发开/关序列
+        self._output_transition_busy = False
         self.lagtime = 1
         self.safty = 100
         self.psw = psw_xx_xx()
@@ -268,6 +270,12 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
 
     def _deflection_step(self):
         """Timer 回调：执行一次拉偏步进。"""
+        if self.StopFlag or not self.plot_thread.is_alive():
+            # 采集未运行时 CurrentV 反馈已停滞，拉偏无法依据实时电压推进，
+            # 自动停止避免定时器空转、反复下发同一设定值
+            self.sigInfo.emit("采集未运行，已自动停止拉偏")
+            self.stop_deflection()
+            return
         try:
             if self.deflection_mode == "Lower":
                 self._deflect_to_36()
@@ -383,7 +391,30 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.isConnected = False
         self._set_manual_controls_enabled(False)
         self.btn_Control(False, False, False, False, False, False, False)
-    
+
+    def cleanup(self):
+        """删除本控件前调用：停止采集线程、拉偏定时器并关闭串口，避免线程/定时器/串口泄漏。"""
+        try:
+            self.StopFlag = True
+            self.findFlag = False
+            if self.plot_thread.is_alive():
+                self.plot_thread.join(timeout=2)
+        except Exception:
+            pass
+        try:
+            self.deflectionTimer.stop()
+        except Exception:
+            pass
+        try:
+            self.psw.close()
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
+
     def V_set(self, voltage=None):
         if not self.isConnected:
             self.sigInfo.emit("Please connect power supply first")
@@ -449,25 +480,38 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
         self.CH1_I_print.setText("Current: %.3f" % I)
         self.sigInfo.emit("All PSW settings checked")
         return [["%.3f" % V, "%.3f" % I]]
+
+    def _responsive_wait(self, seconds):
+        """在不冻结界面的前提下等待若干秒：用局部事件循环让界面继续刷新，
+        而不是 time.sleep 那样阻塞 GUI 线程。配合 _output_transition_busy 互斥标志，
+        避免等待期间重复触发开/关输出序列。"""
+        loop = QtCore.QEventLoop()
+        QtCore.QTimer.singleShot(int(seconds * 1000), loop.quit)
+        loop.exec_()
+
     def output_open(self):
         # 打开输出
+        if self._output_transition_busy:
+            return
         if self.isConnected:
-            self.found = False
-            self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3]
-            self.findFlag = True
-            # thread = threading.Thread(target=self.findThread, args=("综合测试终端",))
-            # thread.start()
-            self.sendALLData()
-            self.start_signal.emit(self.name, self.V_get(), self.I_get())
-            if self.pressNo:
-                self.pressNo = False
-                return
-            self.start_plot()
-            time.sleep(1)
-            self.psw.enableOutput()
-            self.sigInfo.emit("已打开电源输出")
-            self.isOutput = True
-            self.btn_Control(start_btn=False, stop_btn=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
+            self._output_transition_busy = True
+            try:
+                self.found = False
+                self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3]
+                self.findFlag = True
+                self.sendALLData()
+                self.start_signal.emit(self.name, self.V_get(), self.I_get())
+                if self.pressNo:
+                    self.pressNo = False
+                    return
+                self.start_plot()
+                self._responsive_wait(1)
+                self.psw.enableOutput()
+                self.sigInfo.emit("已打开电源输出")
+                self.isOutput = True
+                self.btn_Control(start_btn=False, stop_btn=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
+            finally:
+                self._output_transition_busy = False
         else:
             self.sigInfo.emit("请先连接电源")
             return
@@ -475,57 +519,66 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
     
     def output_open_tcp(self):
         # 打开输出
-        if self.isConnected:    
-            self.found = False
-            self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3]
-            self.findFlag = True
-            # thread = threading.Thread(target=self.findThread, args=("综合测试终端",))
-            # thread.start()
-            self.sendALLData()
-            # self.start_signal.emit(self.name, self.V_get(), self.I_get())
-            # if self.pressNo:
-            #     self.pressNo = False
-            #     return
-            self.start_plot()
-            time.sleep(1)
-            self.psw.enableOutput()
-            self.sigInfo.emit("已打开电源输出")
-            self.isOutput = True
-            self.btn_Control(start_btn=False, stop_btn=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
-            return [True, ""]
+        if self._output_transition_busy:
+            return [False, "输出开关切换进行中，请稍后重试"]
+        if self.isConnected:
+            self._output_transition_busy = True
+            try:
+                self.found = False
+                self.start_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')[:-3]
+                self.findFlag = True
+                self.sendALLData()
+                self.start_plot()
+                self._responsive_wait(1)
+                self.psw.enableOutput()
+                self.sigInfo.emit("已打开电源输出")
+                self.isOutput = True
+                self.btn_Control(start_btn=False, stop_btn=True, Btn_to36=True, Btn_to45=True, Btn_back42=True)
+                return [True, ""]
+            finally:
+                self._output_transition_busy = False
         else:
             self.sigInfo.emit("请先连接电源")
             return [False, "Port not connected"]
 
     def output_close(self):
         # 关闭输出
-        if self.found:
-            self.found = False
-            self.dataUpSignal.emit(os.path.join(DATA_DIR, f"{self.name}_{self.start_time}.csv"))
-        self.psw.enableOutput(False)
-        self.sigInfo.emit("已关闭电源输出")
-        self.isOutput = False
-        time.sleep(1)
-        if self.plot_thread.is_alive():
-            self.StopFlag = True
-            self.plot_thread.join()
-        self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, Btn_to36=False, Btn_to45=False, Btn_back42=False)
+        if self._output_transition_busy:
+            return
+        self._output_transition_busy = True
+        try:
+            if self.found:
+                self.found = False
+                self.dataUpSignal.emit(os.path.join(DATA_DIR, f"{self.name}_{self.start_time}.csv"))
+            self.psw.enableOutput(False)
+            self.sigInfo.emit("已关闭电源输出")
+            self.isOutput = False
+            self._responsive_wait(1)
+            if self.plot_thread.is_alive():
+                self.StopFlag = True
+                self.plot_thread.join()
+            self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, Btn_to36=False, Btn_to45=False, Btn_back42=False)
+        finally:
+            self._output_transition_busy = False
 
-    
+
     def output_close_tcp(self):
         # 关闭输出
-        # if self.found:
-        #     self.found = False  
-        #     self.dataUpSignal.emit(os.path.join(DATA_DIR, f"{self.name}_{self.start_time}.csv"))
-        self.psw.enableOutput(False)
-        self.sigInfo.emit("已关闭电源输出")
-        self.isOutput = False
-        time.sleep(1)
-        if self.plot_thread.is_alive():
-            self.StopFlag = True
-            self.plot_thread.join()
-        self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, Btn_to36=False, Btn_to45=False, Btn_back42=False)
-        return [True, ""]
+        if self._output_transition_busy:
+            return [False, "输出开关切换进行中，请稍后重试"]
+        self._output_transition_busy = True
+        try:
+            self.psw.enableOutput(False)
+            self.sigInfo.emit("已关闭电源输出")
+            self.isOutput = False
+            self._responsive_wait(1)
+            if self.plot_thread.is_alive():
+                self.StopFlag = True
+                self.plot_thread.join()
+            self.btn_Control(start_btn=True, stop_btn=True, start_listen=True, Btn_to36=False, Btn_to45=False, Btn_back42=False)
+            return [True, ""]
+        finally:
+            self._output_transition_busy = False
 
 
     def downDeflection_tcp(self, Con, notice: bool = False):

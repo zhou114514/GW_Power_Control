@@ -20,6 +20,11 @@ DEVICE_TYPE_GPD = "GPD"
 DEVICE_TYPE_GPP = "GPP"
 DEVICE_TYPE_MU_N = "MU_N"
 
+# 单条消息（含未完成消息缓冲）上限，防止异常/恶意客户端持续发送无分隔符数据撑爆内存
+MAX_MESSAGE_SIZE = 64 * 1024
+# 客户端 socket 读超时：让读循环周期性检查 self._running，从而能在停止服务时及时退出
+CLIENT_SOCKET_TIMEOUT = 1.0
+
 
 class TCPServer(QThread):
     """JSON over TCP server for remote power control."""
@@ -29,6 +34,7 @@ class TCPServer(QThread):
         self.host = host
         self.port = int(port)
         self._running = False
+        self._client_threads = []
 
     def stop(self):
         self._running = False
@@ -62,6 +68,9 @@ class TCPServer(QThread):
                         daemon=True,
                     )
                     client_thread.start()
+                    # 记录客户端线程并清理已结束的，便于停止服务时统一等待退出
+                    self._client_threads = [t for t in self._client_threads if t.is_alive()]
+                    self._client_threads.append(client_thread)
                 except socket.timeout:
                     continue
                 except Exception as e:
@@ -69,23 +78,40 @@ class TCPServer(QThread):
                         print(f"接受连接异常: {e}")
 
         self._running = False
+        # 停止服务时，客户端读循环会因 self._running=False + recv 超时而退出，这里等待其结束
+        for client_thread in list(self._client_threads):
+            try:
+                client_thread.join(timeout=2)
+            except Exception:
+                pass
+        self._client_threads = []
 
     def handle_client_connection(self, client_socket):
+        client_socket.settimeout(CLIENT_SOCKET_TIMEOUT)
         try:
-            buffer = ""
-            while True:
-                raw = client_socket.recv(1024)
+            # 用字节缓冲累积，只对完整的一行（以 \n 分隔）做 decode，
+            # 从而正确处理跨 recv 分片的多字节 UTF-8，避免半个字符导致解码报错丢数据
+            buffer = b""
+            while self._running:
+                try:
+                    raw = client_socket.recv(1024)
+                except socket.timeout:
+                    continue
                 if not raw:
                     break
 
-                chunk = raw.decode("utf-8")
-                print(f"收到数据: {chunk}")
-                buffer += chunk
+                buffer += raw
+                if len(buffer) > MAX_MESSAGE_SIZE:
+                    print("单条消息超过上限，断开连接")
+                    self.send(client_socket, self.make_backpack(False, None, "Message too large"))
+                    break
 
-                while "\n" in buffer:
-                    message, buffer = buffer.split("\n", 1)
-                    if not message.strip():
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    message = line.decode("utf-8", errors="ignore").strip()
+                    if not message:
                         continue
+                    print(f"收到数据: {message}")
                     self._handle_message(client_socket, message)
         except Exception as e:
             try:
@@ -103,8 +129,12 @@ class TCPServer(QThread):
     def _handle_message(self, client_socket, message):
         try:
             cmd = json.loads(message)
-        except Exception:
+        except Exception as e:
+            print(f"JSON 解析失败: {e}; 原始消息: {message!r}")
             self.send(client_socket, self.make_backpack(False, None, "Format error"))
+            return
+        if not isinstance(cmd, dict):
+            self.send(client_socket, self.make_backpack(False, None, "Format error: expected JSON object"))
             return
 
         response = self.cmd_handler(cmd)
@@ -207,9 +237,12 @@ class TCPServer(QThread):
         if not params or "Channel" not in params or "Voltage" not in params:
             return self.make_backpack(False, None, "Missing parameter: Channel or Voltage")
 
+        try:
+            channel = int(params["Channel"])
+            voltage = float(params["Voltage"])
+        except (TypeError, ValueError):
+            return self.make_backpack(False, None, "Channel/Voltage must be numeric")
         _, device = self._resolve_device(params)
-        channel = int(params["Channel"])
-        voltage = float(params["Voltage"])
         result = device.invoke_tcp_set_voltage(channel, voltage)
         return self.make_backpack(result[0], None, result[1] if len(result) > 1 else None)
 
@@ -217,9 +250,12 @@ class TCPServer(QThread):
         if not params or "Channel" not in params or "Current" not in params:
             return self.make_backpack(False, None, "Missing parameter: Channel or Current")
 
+        try:
+            channel = int(params["Channel"])
+            current = float(params["Current"])
+        except (TypeError, ValueError):
+            return self.make_backpack(False, None, "Channel/Current must be numeric")
         _, device = self._resolve_device(params)
-        channel = int(params["Channel"])
-        current = float(params["Current"])
         result = device.invoke_tcp_set_current(channel, current)
         return self.make_backpack(result[0], None, result[1] if len(result) > 1 else None)
 
@@ -232,7 +268,10 @@ class TCPServer(QThread):
         if not params or "Channel" not in params:
             return self.make_backpack(False, None, "Missing parameter: Channel")
 
-        channel = int(params["Channel"])
+        try:
+            channel = int(params["Channel"])
+        except (TypeError, ValueError):
+            return self.make_backpack(False, None, "Channel must be numeric")
         enable = bool(params.get("Enable", True))
         result = device.invoke_tcp_set_channel_output(channel, enable)
         return self.make_backpack(result[0], None, result[1] if len(result) > 1 else None)

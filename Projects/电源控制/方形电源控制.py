@@ -57,6 +57,8 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.isListen = False
 
         self.StopFlag = True
+        # 输出开关切换互斥标志，避免稳定等待期间重复触发
+        self._output_transition_busy = False
         self.lagtime = 1
         self.ch1_safty = 100
         self.ch2_safty = 100
@@ -168,7 +170,23 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.sigInfo.emit(f"已断开{self.portchoose.currentText()}")
         self.isConnected = False
 
-    
+    def cleanup(self):
+        """删除本控件前调用：停止采集线程并关闭串口，避免线程与串口泄漏。"""
+        try:
+            self._stop_plot_thread()
+        except Exception:
+            pass
+        try:
+            if getattr(self.GPD, "serial", None) is not None:
+                self.GPD.close()
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
+
     def V_set(self, ch, voltage=None):
         # 设置电压
         if voltage is None:
@@ -310,14 +328,25 @@ class SquarePower(QtWidgets.QWidget,Ui_Form):
         self.sigInfo.emit("已关闭电源输出")
         return [True, warning]
 
+    def _responsive_wait(self, seconds):
+        """在不冻结界面的前提下等待若干秒（局部事件循环，替代阻塞 GUI 线程的 time.sleep）。"""
+        ev = QtCore.QEventLoop()
+        QtCore.QTimer.singleShot(int(seconds * 1000), ev.quit)
+        ev.exec_()
+
     def output_open(self):
         # 打开输出
-        self.GPD.enableOutput()
-        self.sigInfo.emit("已打开电源输出")
-        time.sleep(1)
-        self.isOutput = True
-        self.start_plot()
-        # self.start_plot()
+        if self._output_transition_busy:
+            return
+        self._output_transition_busy = True
+        try:
+            self.GPD.enableOutput()
+            self.sigInfo.emit("已打开电源输出")
+            self._responsive_wait(1)
+            self.isOutput = True
+            self.start_plot()
+        finally:
+            self._output_transition_busy = False
 
 
     def output_close(self):

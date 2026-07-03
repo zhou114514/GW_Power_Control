@@ -235,7 +235,9 @@ class GPPPowerSupply(object):
                 ret = self.serial.readline()
 
         if ret in ("", b""):
-            raise RuntimeError(f"No response for command: {command}")
+            # 空响应视为通信异常（可被 _should_retry_exception 识别并重连重试），
+            # 而不是 RuntimeError 那样直接杀死采集线程
+            raise serial.SerialException(f"No response for command: {command}")
 
         if isinstance(ret, bytes):
             return ret.decode(errors="ignore").strip()
@@ -246,7 +248,11 @@ class GPPPowerSupply(object):
         for suffix in ("V", "A", "W"):
             if text.endswith(suffix):
                 text = text[:-1]
-        return float(text.strip())
+        try:
+            return float(text.strip())
+        except ValueError:
+            # 乱码/非数字响应同样按通信异常处理，交给自动重连
+            raise serial.SerialException(f"Invalid numeric response: {value!r}")
 
     def isValidChannel(self, channel):
         if channel not in (1, 2, 3):

@@ -45,6 +45,7 @@ class MUNPower(QtWidgets.QWidget):
         self.isConnected = False
         self.isOutput = False
         self.StopFlag = True
+        self._output_transition_busy = False
         self.CurrentValues = {channel: [0.0, 0.0] for channel in range(1, self.channel_count + 1)}
         self.voltage_limits = {channel: DEFAULT_VOLTAGE_LIMIT for channel in range(1, self.channel_count + 1)}
         self.current_limits = {channel: DEFAULT_CURRENT_LIMIT for channel in range(1, self.channel_count + 1)}
@@ -992,6 +993,27 @@ class MUNPower(QtWidgets.QWidget):
                 self.channel_output_states[ch] = False
             self._refresh_control_buttons()
 
+    def cleanup(self):
+        """删除本控件前调用：停止采集线程、顺序上电定时器并关闭串口，避免线程/定时器/串口泄漏。"""
+        try:
+            self.StopFlag = True
+            self._stop_output_delay_timer()
+        except Exception:
+            pass
+        try:
+            if self.plot_thread.is_alive():
+                self.plot_thread.join(timeout=2)
+        except Exception:
+            pass
+        try:
+            self.mun.close()
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
     def V_set(self, channel, voltage=None):
         if voltage is None:
             voltage = float(self.channel_inputs[channel]["voltage"].text())
@@ -1091,21 +1113,31 @@ class MUNPower(QtWidgets.QWidget):
             data[0].append(f"{current_limit:.3f}")
         return data
 
+    def _responsive_wait(self, seconds):
+        """在不冻结界面的前提下等待若干秒（局部事件循环，替代阻塞 GUI 线程的 time.sleep）。"""
+        ev = QtCore.QEventLoop()
+        QtCore.QTimer.singleShot(int(seconds * 1000), ev.quit)
+        ev.exec_()
+
     def output_open(self):
         if not self.isConnected:
             self.sigInfo.emit("请先连接电源")
             return
-        if self.isOutput:
+        if self.isOutput or self._output_transition_busy:
             self.sigInfo.emit("电源输出已开启")
             return
 
-        self.sendALLData()
-        self._set_visible_outputs(True)
-        time.sleep(0.3)
-        self.sigInfo.emit("已打开电源输出")
-        self._sync_output_state()
-        if not self.plot_thread.is_alive():
-            self.start_plot()
+        self._output_transition_busy = True
+        try:
+            self.sendALLData()
+            self._set_visible_outputs(True)
+            self._responsive_wait(0.3)
+            self.sigInfo.emit("已打开电源输出")
+            self._sync_output_state()
+            if not self.plot_thread.is_alive():
+                self.start_plot()
+        finally:
+            self._output_transition_busy = False
 
     def output_close(self):
         if not self.isConnected:

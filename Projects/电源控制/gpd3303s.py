@@ -5,7 +5,9 @@ Will Instrument Co., Ltd.
 
 import serial
 import sys
+import time
 import threading
+import functools
 
 class MySerial(serial.Serial):
     """
@@ -44,8 +46,14 @@ class GPD3303S(object):
         self.eol = b'\r'
         self.serial = None
         self.lock = threading.RLock()
+        self._port_name = None
+        self._read_timeout = 1
+        self._write_timeout = 1
 
     def open(self, port, readTimeOut = 1, writeTimeOut = 1):
+        self._port_name = port
+        self._read_timeout = readTimeOut
+        self._write_timeout = writeTimeOut
         self.serial = MySerial(port         = port,
                                baudrate     = self.__baudRate,
                                bytesize     = self.__dataBit,
@@ -73,7 +81,8 @@ class GPD3303S(object):
             self.setTimeout(readTimeOut)
     
     def close(self):
-        self.serial.close()
+        if self.serial is not None:
+            self.serial.close()
 
     def setTimeout(self, timeout):
         if hasattr(self.serial, 'setTimeout') and \
@@ -83,6 +92,42 @@ class GPD3303S(object):
         else:
             # pySerial v3
             self.serial.timeout = timeout
+
+    def _reconnect(self):
+        """尝试关闭并重新打开串口，供 _auto_reconnect 调用。"""
+        if not self._port_name:
+            return False
+        with self.lock:
+            try:
+                if self.serial and self.serial.is_open:
+                    self.serial.close()
+            except Exception:
+                pass
+            time.sleep(0.5)
+            try:
+                self.open(self._port_name, self._read_timeout, self._write_timeout)
+                print("GPD 串口%s重连成功" % self._port_name)
+                return True
+            except Exception as e:
+                print("GPD 串口%s重连失败: %s" % (self._port_name, e))
+                return False
+
+    def _parseReading(self, ret, unit=b''):
+        """
+        解析一条读数响应为浮点数。
+        空响应或非数字响应都视为通信异常（SerialException），
+        以便 _auto_reconnect 触发重连重试，而不是抛出会杀死采集线程的 ValueError。
+        """
+        if not ret:
+            raise serial.SerialException('GPD 无响应（空读取）')
+        text = ret
+        if self.eol and text.endswith(self.eol):
+            text = text[:-len(self.eol)]
+        text = text.replace(unit, b'').strip()
+        try:
+            return float(text)
+        except ValueError:
+            raise serial.SerialException('GPD 读数无法解析: %r' % ret)
 
     def isValidChannel(self, channel):
         """
@@ -137,7 +182,7 @@ class GPD3303S(object):
         if err != b'No Error.':
             raise RuntimeError(err)
 
-        return float(ret[:-len(self.eol)].replace(b'A', b''))
+        return self._parseReading(ret, b'A')
 
     def setVoltage(self, channel, voltage):
         """
@@ -162,7 +207,7 @@ class GPD3303S(object):
         if err != b'No Error.':
             raise RuntimeError(err)
 
-        return float(ret[:-len(self.eol)].replace(b'V', b''))
+        return self._parseReading(ret, b'V')
 
     def getCurrentOutput(self, channel):
         """
@@ -176,7 +221,7 @@ class GPD3303S(object):
         if err != b'No Error.':
             raise RuntimeError(err)
 
-        return float(ret[:-len(self.eol)].replace(b'A', b''))
+        return self._parseReading(ret, b'A')
 
     def getVoltageOutput(self, channel):
         """
@@ -190,7 +235,7 @@ class GPD3303S(object):
         if err != b'No Error.':
             raise RuntimeError(err)
 
-        return float(ret[:-len(self.eol)].replace(b'V', b''))
+        return self._parseReading(ret, b'V')
 
     def enableOutput(self, enable = True):
         """
@@ -211,7 +256,8 @@ class GPD3303S(object):
         if ret != b'':
             return ret[:-len(self.eol)].strip()
         else:
-            raise RuntimeError('Cannot read error message')
+            # 空响应视为通信异常，让调用方的 _auto_reconnect 触发重连
+            raise serial.SerialException('Cannot read error message (empty)')
         
 
     def setDelimiter(self, eol = b'\r\n'):
@@ -223,15 +269,37 @@ class GPD3303S(object):
 
 
 def _locked_serial_transaction(method):
+    @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
         with self.lock:
             return method(self, *args, **kwargs)
     return wrapper
 
 
+def _auto_reconnect(method):
+    """串口操作遇到 SerialException 时自动重连并重试一次，其它异常直接抛出。"""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except serial.SerialException as e:
+            print("GPD 串口操作异常，尝试自动重连: %s" % e)
+            if self._reconnect():
+                return method(self, *args, **kwargs)
+            raise
+    return wrapper
+
+
+# 仅加锁（不自动重连）：连接管理与错误查询本身
+for _method_name in ("open", "close", "getError"):
+    setattr(
+        GPD3303S,
+        _method_name,
+        _locked_serial_transaction(getattr(GPD3303S, _method_name)),
+    )
+
+# 加锁 + 自动重连：真正的数据读写方法
 for _method_name in (
-    "open",
-    "close",
     "setCurrent",
     "getCurrent",
     "setVoltage",
@@ -239,12 +307,11 @@ for _method_name in (
     "getCurrentOutput",
     "getVoltageOutput",
     "enableOutput",
-    "getError",
 ):
     setattr(
         GPD3303S,
         _method_name,
-        _locked_serial_transaction(getattr(GPD3303S, _method_name)),
+        _auto_reconnect(_locked_serial_transaction(getattr(GPD3303S, _method_name))),
     )
 
 del _method_name

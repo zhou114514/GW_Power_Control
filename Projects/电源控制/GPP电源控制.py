@@ -3,7 +3,7 @@ import os
 import threading
 import time
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QTextCursor
 
@@ -36,6 +36,7 @@ class GPPPower(QtWidgets.QWidget):
         self.isConnected = False
         self.isOutput = False
         self.StopFlag = True
+        self._output_transition_busy = False
         self.ch1_safty = 100
         self.ch2_safty = 100
         self.ch3_safty = 5
@@ -426,6 +427,23 @@ class GPPPower(QtWidgets.QWidget):
             self.isOutput = False
             self.btn_Control(False, False, False, False)
 
+    def cleanup(self):
+        """删除本控件前调用：停止采集线程并关闭串口，避免线程与串口泄漏。"""
+        try:
+            self.StopFlag = True
+            if self.plot_thread.is_alive():
+                self.plot_thread.join(timeout=2)
+        except Exception:
+            pass
+        try:
+            self.gpp.close()
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
     def V_set(self, ch, voltage=None):
         if voltage is None:
             if ch == 3:
@@ -487,18 +505,29 @@ class GPPPower(QtWidgets.QWidget):
             data[0].append(f"{current:.3f}")
         return data
 
+    def _responsive_wait(self, seconds):
+        """在不冻结界面的前提下等待若干秒（局部事件循环，替代阻塞 GUI 线程的 time.sleep）。"""
+        ev = QtCore.QEventLoop()
+        QtCore.QTimer.singleShot(int(seconds * 1000), ev.quit)
+        ev.exec_()
+
     def output_open(self):
         if not self.isConnected:
             self.sigInfo.emit("请先连接电源")
             return
-
-        self.sendALLData()
-        self.start_plot()
-        time.sleep(0.3)
-        self.gpp.enableOutput(True)
-        self.sigInfo.emit("已打开电源输出")
-        self.isOutput = True
-        self.btn_Control(False, True, True, True)
+        if self._output_transition_busy:
+            return
+        self._output_transition_busy = True
+        try:
+            self.sendALLData()
+            self.start_plot()
+            self._responsive_wait(0.3)
+            self.gpp.enableOutput(True)
+            self.sigInfo.emit("已打开电源输出")
+            self.isOutput = True
+            self.btn_Control(False, True, True, True)
+        finally:
+            self._output_transition_busy = False
 
     def output_close(self):
         try:
