@@ -84,7 +84,11 @@ class GPPPowerSupply(object):
 
     @classmethod
     def list_available_resources(cls):
-        return cls.list_serial_resources() + cls.list_usb_resources()
+        try:
+            from .sim_device import SIM_PORT_NAME
+        except ImportError:
+            from sim_device import SIM_PORT_NAME
+        return [SIM_PORT_NAME] + cls.list_serial_resources() + cls.list_usb_resources()
 
     @classmethod
     def get_environment_hint(cls):
@@ -111,7 +115,16 @@ class GPPPowerSupply(object):
         self._write_timeout = writeTimeOut
         self._supports_iout3 = True
 
-        if self.is_usb_resource(resource_name):
+        try:
+            from .sim_device import is_sim_port, FakeScpiSerial
+        except ImportError:
+            from sim_device import is_sim_port, FakeScpiSerial
+
+        if is_sim_port(resource_name):
+            # 无硬件调试：接入内存模拟设备（其 *IDN? 含 GPP，可通过下方校验）
+            self._resource_type = "serial"
+            self.serial = FakeScpiSerial("GPP")
+        elif self.is_usb_resource(resource_name):
             self._resource_type = "visa"
             self._open_visa(resource_name, readTimeOut)
         else:

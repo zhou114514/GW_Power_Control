@@ -46,6 +46,15 @@ class Tool():
             key=lambda port: getattr(port, "device", str(port))
         )
         combox.clear()
+
+        # 常驻虚拟设备项，支持无硬件调试
+        try:
+            from .sim_device import SIM_PORT_NAME
+        except ImportError:
+            from sim_device import SIM_PORT_NAME
+        Com_Dict[SIM_PORT_NAME] = "虚拟设备（无硬件调试）"
+        combox.addItem(SIM_PORT_NAME)
+
         for port in port_list:
             port_name = getattr(port, "device", "")
             if not port_name:

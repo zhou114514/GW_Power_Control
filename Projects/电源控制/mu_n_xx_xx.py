@@ -51,7 +51,11 @@ class MUNPowerSupply(object):
             port_name = getattr(port, "device", "")
             if port_name:
                 resources.append(port_name)
-        return sorted(set(resources))
+        try:
+            from .sim_device import SIM_PORT_NAME
+        except ImportError:
+            from sim_device import SIM_PORT_NAME
+        return [SIM_PORT_NAME] + sorted(set(resources))
 
     @classmethod
     def get_environment_hint(cls):
@@ -67,6 +71,19 @@ class MUNPowerSupply(object):
         self._resource_name = resource_name
         self._read_timeout = float(read_timeout)
         self._write_timeout = float(write_timeout)
+
+        try:
+            from .sim_device import is_sim_port, FakeModbusSerial
+        except ImportError:
+            from sim_device import is_sim_port, FakeModbusSerial
+        if is_sim_port(resource_name):
+            # 无硬件调试：接入内存 Modbus 模拟设备
+            self.serial = FakeModbusSerial(
+                channel_count=self.channel_count, slave_address=self.slave_address
+            )
+            self._reset_buffers()
+            return
+
         self.serial = serial.Serial(
             port=resource_name,
             baudrate=self.DEFAULT_BAUDRATE,

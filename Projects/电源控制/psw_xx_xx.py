@@ -55,6 +55,16 @@ class psw_xx_xx(object):
         self._port_name = port
         self._read_timeout = readTimeOut
         self._write_timeout = writeTimeOut
+        try:
+            from .sim_device import is_sim_port, FakeScpiSerial
+        except ImportError:
+            from sim_device import is_sim_port, FakeScpiSerial
+        if is_sim_port(port):
+            # 无硬件调试：接入内存模拟设备，跳过真实串口与分隔符探测
+            self.serial = FakeScpiSerial("PSW")
+            self._command_termination = b'\n'
+            self.eol = b'\n'
+            return
         self.serial = MySerial(port         = port,
                                baudrate     = self.__baudRate,
                                bytesize     = self.__dataBit,
