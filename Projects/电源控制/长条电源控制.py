@@ -474,9 +474,9 @@ class LongPower(QtWidgets.QWidget,Ui_Form):
                 CH1_I["电流"] = I
                 self.CurrentV = V
                 self.CurrentI = I
-                if I > self.safty:
-                    self.StopFlag = True
-                    self.current_warn.emit(f"{self.name}", f"CH1", f"{I}")
+                # if I > self.safty:
+                #     self.StopFlag = True
+                #     self.current_warn.emit(f"{self.name}", f"CH1", f"{I}")
                 self.volatge_signal.emit(CH1_V)
                 self.current_signal.emit(CH1_I)
                 if not os.path.exists(f"./电源采集数据/"):
