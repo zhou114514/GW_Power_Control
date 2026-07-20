@@ -18,7 +18,7 @@
     <normaloff>C:/Users/Lenovo/Desktop/logo.png</normaloff>C:/Users/Lenovo/Desktop/logo.png</iconset>
   </property>
   <property name="styleSheet">
-   <string notr="true">background-color: rgb(170, 170, 127);</string>
+   <string notr="true"/>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout">
@@ -42,17 +42,17 @@
       <property name="spacing">
        <number>1</number>
       </property>
-      <item>
-       <widget class="QFrame" name="frame_left">
-        <property name="minimumSize">
-         <size>
-          <width>100</width>
-          <height>0</height>
-         </size>
-        </property>
-        <property name="styleSheet">
-         <string notr="true">background-color: rgb(170, 255, 255);</string>
-        </property>
+        <item>
+         <widget class="QFrame" name="frame_left">
+          <property name="minimumSize">
+           <size>
+            <width>130</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="styleSheet">
+           <string notr="true"/>
+          </property>
         <property name="frameShape">
          <enum>QFrame::StyledPanel</enum>
         </property>
@@ -80,7 +80,7 @@
          <bool>false</bool>
         </property>
         <property name="styleSheet">
-         <string notr="true">background-color: rgb(236, 236, 236);</string>
+         <string notr="true"/>
         </property>
         <property name="currentIndex">
          <number>-1</number>

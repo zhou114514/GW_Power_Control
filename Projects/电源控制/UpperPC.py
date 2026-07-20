@@ -3,14 +3,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import binascii
 import threading
 import pandas as pd
-# C:\Python\Python36\Scripts\pyinstaller.exe -F --noconsole --onefile -p D:\Coding\python\Pyserial-Demo-master\venv\Lib\site-packages pyserial_demo_2.py
 import os.path
 
-# grandfaPath=os.path.abspath(os.path.dirname(os.getcwd()) + os.path.sep + "..")
-# sys.path.append(grandfaPath) #需要加入爷爷目录，否则无法导入其他包
 from Utility.MainWindow.MainWindow import Ui_MainWindow
 
 from .方形电源控制 import SquarePower
@@ -26,48 +22,131 @@ VERSION = "Unknown" if not os.path.exists("更新内容.csv") or \
     pd.read_csv("更新内容.csv", header=None, index_col=None).iloc[-1, 0] is None \
     else pd.read_csv("更新内容.csv", header=None, index_col=None).iloc[-1, 0]
 
-class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理左侧按钮弹出窗口的逻辑
+# 仅突出「顺序上下电」按钮；其余控件使用 PyQt5 / 系统默认样式
+_SEQ_BTN_STYLE = """
+    QPushButton#seq_on_btn {
+        background-color: #2e7d32;
+        color: white;
+        font: 11pt "微软雅黑";
+        padding: 6px;
+    }
+    QPushButton#seq_on_btn:hover {
+        background-color: #388e3c;
+    }
+    QPushButton#seq_on_btn:pressed {
+        background-color: #1b5e20;
+    }
+    QPushButton#seq_on_btn:disabled {
+        background-color: #a5d6a7;
+        color: #f5f5f5;
+    }
+    QPushButton#seq_off_btn {
+        background-color: #c62828;
+        color: white;
+        font: 11pt "微软雅黑";
+        padding: 6px;
+    }
+    QPushButton#seq_off_btn:hover {
+        background-color: #d32f2f;
+    }
+    QPushButton#seq_off_btn:pressed {
+        background-color: #b71c1c;
+    }
+    QPushButton#seq_off_btn:disabled {
+        background-color: #ef9a9a;
+        color: #f5f5f5;
+    }
+"""
+
+
+class UpperPcWin(QtWidgets.QMainWindow, Ui_MainWindow):
+    """主窗口：管理左侧导航与右侧电源页面切换"""
 
     _seq_ui_signal = pyqtSignal(bool, bool, str)  # is_power_on, success, error_message
 
-    leftBtnDict = {} #左侧按钮
-    bindBtnWidget={} #右侧页面
+    leftBtnDict = {}
+    bindBtnWidget = {}
     rightPageDict = {}
-    portObjs={}
-    istestData=False #是否测试数据
-    # myWidgetObj=None #必须在show以后运行
+    portObjs = {}
+    istestData = False
+
     def __init__(self):
         super(UpperPcWin, self).__init__()
-        self.setupUi(self) #必须放在show之后
+        self.setupUi(self)
         self.setWindowTitle(f"光学头电源控制{VERSION}")
         self._seq_ui_signal.connect(self._on_seq_finished)
-        # self.ftp = FTPClient("192.168.10.100", "yab", "qwer1234!!")
 
-        # self.initData()
-
-    def initUi(self):  #子页面的需要的ContextInfo通过名称联系起来
+    def initUi(self):
+        """初始化左侧三区布局，然后加载设备与 TCP 服务"""
         self.label.setText(VERSION)
         self.label.clicked.connect(self.showAbout)
 
-        #删除所有左侧按钮
-        self.leftlayout = QGridLayout()
+        # ── 顶部固定区：版本号 + 设置按钮 ─────────────────────────
+        top_frame = QtWidgets.QFrame()
+        top_layout = QtWidgets.QVBoxLayout(top_frame)
+        top_layout.setContentsMargins(6, 8, 6, 6)
+        top_layout.setSpacing(6)
+        top_layout.addWidget(self.label)
 
         self.settings_btn = QtWidgets.QPushButton("电源设置")
+        self.settings_btn.setObjectName("settings_btn")
         self.settings_btn.setStyleSheet("font: 12pt \"微软雅黑\";")
         self.settings_btn.clicked.connect(self.show_power_settings)
-        self.leftlayout.addWidget(self.settings_btn, 0, 0)
+        top_layout.addWidget(self.settings_btn)
+
+        # ── 分隔线 ─────────────────────────────────────────────────
+        sep1 = QtWidgets.QFrame()
+        sep1.setFrameShape(QtWidgets.QFrame.HLine)
+        sep1.setFrameShadow(QtWidgets.QFrame.Sunken)
+
+        # ── 中间弹性区：设备切换按钮（可滚动）─────────────────────
+        self.device_btn_widget = QtWidgets.QWidget()
+        self.device_btn_widget.setObjectName("device_btn_widget")
+        self.device_btn_layout = QtWidgets.QVBoxLayout(self.device_btn_widget)
+        self.device_btn_layout.setContentsMargins(6, 6, 6, 6)
+        self.device_btn_layout.setSpacing(4)
+        self.device_btn_layout.setAlignment(Qt.AlignTop)
+
+        device_scroll = QtWidgets.QScrollArea()
+        device_scroll.setWidget(self.device_btn_widget)
+        device_scroll.setWidgetResizable(True)
+        device_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        device_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # ── 分隔线 ─────────────────────────────────────────────────
+        sep2 = QtWidgets.QFrame()
+        sep2.setFrameShape(QtWidgets.QFrame.HLine)
+        sep2.setFrameShadow(QtWidgets.QFrame.Sunken)
+
+        # ── 底部固定区：顺序上下电（远离切换按钮，防止误触）───────
+        bottom_frame = QtWidgets.QFrame()
+        bottom_layout = QtWidgets.QVBoxLayout(bottom_frame)
+        bottom_layout.setContentsMargins(6, 6, 6, 8)
+        bottom_layout.setSpacing(6)
 
         self.seq_on_btn = QtWidgets.QPushButton("顺序上电")
-        self.seq_on_btn.setStyleSheet("font: 12pt \"微软雅黑\";")
+        self.seq_on_btn.setObjectName("seq_on_btn")
+        self.seq_on_btn.setStyleSheet(_SEQ_BTN_STYLE)
         self.seq_on_btn.clicked.connect(self._seq_power_on)
-        self.leftlayout.addWidget(self.seq_on_btn, 1, 0)
+        bottom_layout.addWidget(self.seq_on_btn)
 
         self.seq_off_btn = QtWidgets.QPushButton("顺序下电")
-        self.seq_off_btn.setStyleSheet("font: 12pt \"微软雅黑\";")
+        self.seq_off_btn.setObjectName("seq_off_btn")
+        self.seq_off_btn.setStyleSheet(_SEQ_BTN_STYLE)
         self.seq_off_btn.clicked.connect(self._seq_power_off)
-        self.leftlayout.addWidget(self.seq_off_btn, 2, 0)
+        bottom_layout.addWidget(self.seq_off_btn)
 
-        self.frame_left.setLayout(self.leftlayout)
+        # ── 组装主布局（默认控件样式，仅上下电按钮着色）────────────
+        main_layout = QtWidgets.QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addWidget(top_frame)
+        main_layout.addWidget(sep1)
+        main_layout.addWidget(device_scroll, 1)
+        main_layout.addWidget(sep2)
+        main_layout.addWidget(bottom_frame)
+
+        self.frame_left.setLayout(main_layout)
 
         cfg = Tool.read_config("Additional")
         if cfg["power_add"] == "True":
@@ -75,6 +154,14 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         if cfg["power_del"] == "True":
             self.delBTN()
 
+        self._load_devices_and_tcp()
+
+    # ──────────────────────────────────────────────────────────────
+    # 设备与 TCP 加载（供首次加载和热重载共用）
+    # ──────────────────────────────────────────────────────────────
+
+    def _load_devices_and_tcp(self):
+        """读取 power_config，创建电源实例，启动 TCP 服务"""
         power_cfg = Tool.read_power_config()
         self.power_objs = []
 
@@ -130,6 +217,57 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         if serial_cfg["auto_output"]:
             for obj in self.power_objs:
                 obj.start_btn.click()
+
+    # ──────────────────────────────────────────────────────────────
+    # 热重载：停止现有资源，重新加载配置
+    # ──────────────────────────────────────────────────────────────
+
+    def reloadUi(self):
+        """停止所有电源与 TCP 服务，清理 UI 元素，重新加载当前配置"""
+        # 1. 停止 TCP 服务
+        if hasattr(self, 'tcp_server') and self.tcp_server.isRunning():
+            self.tcp_server.terminate()
+            self.tcp_server.wait(2000)
+
+        # 2. 停止数据采集线程并关闭串口
+        for obj in getattr(self, 'power_objs', []):
+            try:
+                if hasattr(obj, 'close_plot'):
+                    obj.close_plot()
+            except Exception:
+                pass
+            try:
+                if getattr(obj, 'isConnected', False):
+                    obj.power_port_close()
+            except Exception:
+                pass
+            device_id = getattr(obj, 'device_id', None)
+            if device_id:
+                Tool.unregister_power_device(device_id)
+
+        # 清理电源实例列表，避免重复加载时列表膨胀
+        LongPower.instances.clear()
+        SquarePower.instances.clear()
+        self.power_objs = []
+
+        # 3. 清除左侧设备按钮和右侧 stackedWidget 页面
+        for btn in list(self.leftBtnDict.values()):
+            self.device_btn_layout.removeWidget(btn)
+            btn.deleteLater()
+        for page in list(self.rightPageDict.values()):
+            self.stackedWidget.removeWidget(page)
+            page.deleteLater()
+
+        self.leftBtnDict.clear()
+        self.rightPageDict.clear()
+        self.bindBtnWidget.clear()
+
+        # 4. 重新加载设备与 TCP
+        self._load_devices_and_tcp()
+
+    # ──────────────────────────────────────────────────────────────
+    # 顺序上下电
+    # ──────────────────────────────────────────────────────────────
 
     @staticmethod
     def _format_seq_error_zh(error_message):
@@ -201,45 +339,37 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
         """一键顺序下电：按 power_off_sequence 顺序依次调用各电源的下电接口"""
         self._run_seq_power(False)
 
+    # ──────────────────────────────────────────────────────────────
+    # 设置与关于
+    # ──────────────────────────────────────────────────────────────
+
     def show_power_settings(self):
+        """打开电源设置弹窗，保存后直接热重载，无需手动重启"""
         dlg = PowerSettingsDialog(self)
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
-            reply = QtWidgets.QMessageBox.question(
-                self,
-                "重启提示",
-                "电源配置已保存，需要重启软件后生效。是否立即重启？",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.Yes,
-            )
-            if reply == QtWidgets.QMessageBox.Yes:
-                QtWidgets.QApplication.quit()
-                os.execl(sys.executable, sys.executable, *sys.argv)
+            self.reloadUi()
 
     def showAbout(self):
-        # 读取 CSV 文件
         df = pd.read_csv("更新内容.csv", header=None, names=["版本号", "更新内容"])
-        # 将 DataFrame 转换为 HTML 表格字符串
         html_table = df.to_html(index=False, border=1)
-        # 创建关于窗口
         aboutWin = QtWidgets.QDialog(self)
         aboutWin.setWindowTitle("关于")
         aboutWin.resize(400, 300)
         aboutWin.setStyleSheet("background-color: #FFFFFF;color: #000000;font: 12pt \"微软雅黑\";")
-        # 创建 QTextEdit 控件
         aboutText = QtWidgets.QTextEdit(aboutWin)
         aboutText.setReadOnly(True)
-        aboutText.setHtml(html_table)  # 设置 HTML 内容
-        # 使用布局管理器
+        aboutText.setHtml(html_table)
         layout = QtWidgets.QVBoxLayout(aboutWin)
-        layout.addWidget(aboutText)  # 将 QTextEdit 添加到布局中
-        # 设置布局的边距（可选）
+        layout.addWidget(aboutText)
         layout.setContentsMargins(10, 10, 10, 10)
-        # 显示窗口
         aboutWin.show()
 
+    # ──────────────────────────────────────────────────────────────
+    # 电源数据上传（FTP，可选）
+    # ──────────────────────────────────────────────────────────────
+
     def update_data(self, filename):
-        # 上传电源记录
-        json_data = json.load(open((os.path.expanduser("~")+"\\AppData\\Local\\YabCom\\common\\config\\terminal_recent_projects.json"), 'r', encoding='utf-8'))
+        json_data = json.load(open((os.path.expanduser("~") + "\\AppData\\Local\\YabCom\\common\\config\\terminal_recent_projects.json"), 'r', encoding='utf-8'))
         print(json_data)
         project = json_data[0]["Name"]
         number = json_data[0]["Numbers"]
@@ -247,7 +377,10 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
             self.ftp.make_dir(f"/组网星/01 测试数据/02 每日历史数据/正样{number}/{datetime.datetime.now().strftime('%Y%m%d')}/电源数据")
         self.ftp.moveto_dir(f"/组网星/01 测试数据/02 每日历史数据/正样{number}/{datetime.datetime.now().strftime('%Y%m%d')}/电源数据")
         self.ftp.upload_file(filename)
-        pass
+
+    # ──────────────────────────────────────────────────────────────
+    # 电流过高警告与输出确认
+    # ──────────────────────────────────────────────────────────────
 
     def CurrentWarning(self, str1, str2, str3):
         QtWidgets.QMessageBox.warning(self, f"{str1}警告", f"电流过高，请检查电源电流是否过高，当前{str2}电流为{str3}A")
@@ -266,122 +399,115 @@ class UpperPcWin(QtWidgets.QMainWindow,Ui_MainWindow): #主窗口只负责处理
 
     def start_info(self, name, v, i):
         sender = self.sender()
-        reply = QtWidgets.QMessageBox.question(self,
-                                               f'{name}',
-                                               f"当前设置电压{v}V,电流{i}A是否正确？",
-                                               QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                                               QtWidgets.QMessageBox.No)
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            f'{name}',
+            f"当前设置电压{v}V,电流{i}A是否正确？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
         if sender:
             sender.pressNo = reply != QtWidgets.QMessageBox.Yes
 
+    # ──────────────────────────────────────────────────────────────
+    # 调试用：动态增删电源（需 Additional 配置开启）
+    # ──────────────────────────────────────────────────────────────
 
     def addBTN(self):
-        AddBtnCustom = QtWidgets.QPushButton(self.frame_left)
+        AddBtnCustom = QtWidgets.QPushButton(self.device_btn_widget)
         AddBtnCustom.setStyleSheet("font: 12pt \"微软雅黑\";")
         AddBtnCustom.setObjectName("addBtn")
-        n=self.leftlayout.count()
-        self.leftlayout.addWidget(AddBtnCustom, n, 0)
-        self.frame_left.setLayout(self.leftlayout)
+        self.device_btn_layout.addWidget(AddBtnCustom)
         AddBtnCustom.setText("addBtn")
-        AddBtnCustom.clicked.connect(lambda: self.AddSubWin(SquarePower(f"方形电源{SquarePower.get_instances().__len__()+1}")))
+        AddBtnCustom.clicked.connect(
+            lambda: self.AddSubWin(SquarePower(f"方形电源{SquarePower.get_instances().__len__() + 1}"))
+        )
 
     def delBTN(self):
-        DelBtnCustom = QtWidgets.QPushButton(self.frame_left)
+        DelBtnCustom = QtWidgets.QPushButton(self.device_btn_widget)
         DelBtnCustom.setStyleSheet("font: 12pt \"微软雅黑\";")
         DelBtnCustom.setObjectName("delBtn")
-        n=self.leftlayout.count()
-        self.leftlayout.addWidget(DelBtnCustom, n, 0)
-        self.frame_left.setLayout(self.leftlayout)
+        self.device_btn_layout.addWidget(DelBtnCustom)
         DelBtnCustom.setText("delBtn")
-        DelBtnCustom.clicked.connect(lambda: self.DelSubWin(SquarePower.get_instances()[-1]))
+        DelBtnCustom.clicked.connect(
+            lambda: self.DelSubWin(SquarePower.get_instances()[-1])
+        )
 
-    def AddSubWin(self,widgetObj):
-        #增加左侧按钮
-        # self.leftlayout=QGridLayout()
-        BtnCustom = QtWidgets.QPushButton(self.frame_left)
-        BtnCustom.setStyleSheet("font: 12pt \"微软雅黑\";")
+    # ──────────────────────────────────────────────────────────────
+    # 子页面管理：添加 / 删除 / 切换
+    # ──────────────────────────────────────────────────────────────
+
+    def AddSubWin(self, widgetObj):
+        """在左侧设备切换区添加按钮，右侧 stackedWidget 添加对应页面"""
+        BtnCustom = QtWidgets.QPushButton(self.device_btn_widget)
         BtnCustom.setCheckable(True)
-        BtnCustom.setObjectName("Btn"+widgetObj.name)
-        n=self.leftlayout.count()
-        self.leftlayout.addWidget(BtnCustom, n, 0)
-        self.frame_left.setLayout(self.leftlayout) #这个必须动态加入才能自动布局
+        BtnCustom.setObjectName("Btn" + widgetObj.name)
+        BtnCustom.setStyleSheet("font: 12pt \"微软雅黑\";")
+        BtnCustom.setText(widgetObj.name)
+        self.device_btn_layout.addWidget(BtnCustom)
 
-        BtnCustom.setText(widgetObj.name)#自定义页面的名字
-
-        #增加右侧stackwidhet的页面
         page_custom = QtWidgets.QWidget()
-        page_custom.setObjectName("Page"+widgetObj.name)
-        self.gridLayout_custom = QtWidgets.QGridLayout(page_custom)
-        self.gridLayout_custom.setObjectName("gridLayout_custom")
-        self.gridLayout_custom.setContentsMargins(1, 1, 1, 1)
+        page_custom.setObjectName("Page" + widgetObj.name)
+        grid = QtWidgets.QGridLayout(page_custom)
+        grid.setObjectName("gridLayout_custom")
+        grid.setContentsMargins(1, 1, 1, 1)
+        grid.addWidget(widgetObj, 1, 1, 1, 1)
 
-        self.gridLayout_custom.addWidget(widgetObj,1,1,1,1)
-
-        self.stackedWidget.addWidget(page_custom) #添加到右侧stackedWidget
+        self.stackedWidget.addWidget(page_custom)
 
         self.bindBtnWidget[BtnCustom.objectName()] = page_custom.objectName()
-        self.leftBtnDict [BtnCustom.objectName()] = BtnCustom
-        self.rightPageDict[BtnCustom.objectName() ]=page_custom
+        self.leftBtnDict[BtnCustom.objectName()] = BtnCustom
+        self.rightPageDict[BtnCustom.objectName()] = page_custom
 
-        #绑定页面与按钮
-        BtnCustom.clicked.connect( lambda: self.leftBtnCallback(BtnCustom.objectName()) )
+        BtnCustom.clicked.connect(lambda: self.leftBtnCallback(BtnCustom.objectName()))
 
         if isinstance(widgetObj, SquarePower):
             widgetObj.start_signal.connect(self.start_info_square)
 
-    def DelSubWin(self,widgetObj):
-        #删除左侧按钮
-        BtnCustom=self.leftBtnDict["Btn"+widgetObj.name]
-        self.leftlayout.removeWidget(BtnCustom)
+    def DelSubWin(self, widgetObj):
+        """从左侧与右侧移除指定电源的按钮和页面"""
+        key = "Btn" + widgetObj.name
+
+        BtnCustom = self.leftBtnDict[key]
+        self.device_btn_layout.removeWidget(BtnCustom)
         BtnCustom.deleteLater()
         BtnCustom.setParent(None)
 
-        #删除右侧stackedWidget的页面
-        page_custom=self.rightPageDict["Btn"+widgetObj.name]
+        page_custom = self.rightPageDict[key]
         self.stackedWidget.removeWidget(page_custom)
         page_custom.deleteLater()
         page_custom.setParent(None)
 
-        #删除按钮与页面的绑定
-        del self.leftBtnDict["Btn"+widgetObj.name]
-        del self.rightPageDict["Btn"+widgetObj.name]
-        del self.bindBtnWidget[BtnCustom.objectName()]
+        del self.leftBtnDict[key]
+        del self.rightPageDict[key]
+        del self.bindBtnWidget[key]
 
-        #删除页面的对象
         if widgetObj:
             del SquarePower.get_instances()[-1]
 
-    def leftBtnCallback(self,BtnobjectName):
-
+    def leftBtnCallback(self, BtnobjectName):
+        """切换右侧显示页面，并更新左侧按钮选中状态"""
         for k, v in self.leftBtnDict.items():
-            if k==BtnobjectName:
-                self.stackedWidget.setCurrentWidget(self.rightPageDict[k] )
+            if k == BtnobjectName:
+                self.stackedWidget.setCurrentWidget(self.rightPageDict[k])
                 self.leftBtnDict[k].setChecked(True)
-
             else:
                 self.leftBtnDict[k].setChecked(False)
 
-
-    def CreateDbEngine(self):
-        #todo 创建数据库引擎，并创建访问锁
-        pass
+    # ──────────────────────────────────────────────────────────────
+    # 窗口关闭
+    # ──────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        """
-        重写closeEvent方法，实现dialog窗体关闭时执行一些代码
-        :param event: close()触发的事件
-        :return: None
-        """
-        reply = QtWidgets.QMessageBox.question(self,
-                                               '本程序',
-                                               "是否要退出程序？",
-                                               QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                                               QtWidgets.QMessageBox.No)
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            '本程序',
+            "是否要退出程序？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
         if reply == QtWidgets.QMessageBox.Yes:
-
             event.accept()
-
             os._exit(0)
-
         else:
             event.ignore()
