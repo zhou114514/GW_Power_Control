@@ -55,6 +55,8 @@ def get_scenario_config(scenario_id):
                     "remote": True,
                 }
             ],
+            "power_on_sequence": ["GXT"],
+            "power_off_sequence": ["GXT"],
         }
     if scenario_id == "gxt_xw":
         return {
@@ -103,6 +105,8 @@ def get_scenario_config(scenario_id):
                     "remote": False,
                 },
             ],
+            "power_on_sequence": ["GXT", "GF", "SQ1", "SQ2"],
+            "power_off_sequence": ["SQ2", "SQ1", "GF", "GXT"],
         }
     if scenario_id == "gxt_fgw":
         return {
@@ -129,6 +133,8 @@ def get_scenario_config(scenario_id):
                     "remote": True,
                 },
             ],
+            "power_on_sequence": ["GXT", "GF"],
+            "power_off_sequence": ["GF", "GXT"],
         }
     return Tool.read_power_config_raw()
 
@@ -451,6 +457,10 @@ class PowerSettingsDialog(QDialog):
         btn = self.scene_group.checkedButton()
         return btn.property("scenario_id") if btn else "gxt_only"
 
+    def _set_sequence_edits(self, on_seq, off_seq):
+        self.seq_on_edit.setText(", ".join(str(x) for x in on_seq))
+        self.seq_off_edit.setText(", ".join(str(x) for x in off_seq))
+
     def _on_scenario_changed(self, _btn=None, load_from_cfg=False):
         sid = self._selected_scenario()
         idx = next(i for i, (s, _, _) in enumerate(SCENARIO_META) if s == sid)
@@ -459,10 +469,27 @@ class PowerSettingsDialog(QDialog):
         saved_devices = self._current_raw.get("devices", [])
         if load_from_cfg and sid == saved_scenario:
             self._scenario_pages[sid].load_devices(saved_devices)
+            # 序列已在 _load_from_config 中从配置文件写入
         elif sid == "manual":
-            self._scenario_pages["manual"].load_devices(saved_devices if saved_scenario == "manual" else [])
+            self._scenario_pages["manual"].load_devices(
+                saved_devices if saved_scenario == "manual" else []
+            )
+            if not load_from_cfg:
+                # 手动配置：默认按当前设备列表顺序上电、逆序下电
+                ids = [d.get("id", "") for d in saved_devices if d.get("id")]
+                if saved_scenario == "manual" and ids:
+                    self._set_sequence_edits(ids, list(reversed(ids)))
+                else:
+                    self._set_sequence_edits([], [])
         else:
-            self._scenario_pages[sid].load_devices(get_scenario_config(sid)["devices"])
+            sc = get_scenario_config(sid)
+            self._scenario_pages[sid].load_devices(sc["devices"])
+            if not load_from_cfg:
+                # 切换预设场景时同步写入该场景默认上下电顺序，保存时可一并写入配置
+                self._set_sequence_edits(
+                    sc.get("power_on_sequence", []),
+                    sc.get("power_off_sequence", []),
+                )
 
     def _on_apply(self):
         sid = self._selected_scenario()
