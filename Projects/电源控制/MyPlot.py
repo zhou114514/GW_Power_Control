@@ -1,8 +1,13 @@
 import numpy as np
 import pyqtgraph as pg
+from PyQt5 import QtCore
 
 pg.setConfigOption('background', 'w')  # 白底黑线
 pg.setConfigOption('foreground', 'k')
+
+RESIZE_MARGIN = 12     # 底边可拖拽调高的热区高度(px)
+MIN_PLOT_HEIGHT = 120
+MAX_PLOT_HEIGHT = 2000
 
 class MyPlot(pg.GraphicsLayoutWidget):
     dataDict = {}
@@ -13,6 +18,13 @@ class MyPlot(pg.GraphicsLayoutWidget):
     def __init__(self, dataDict, dataLen=30):  # dataLen是显示的数据最大个数
         super(MyPlot, self).__init__()
         self.dataDict = {}
+
+        self._resizing = False
+        self._resize_start_global_y = 0
+        self._resize_start_height = 0
+        self.setMinimumHeight(MIN_PLOT_HEIGHT)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
 
         self.dataLen = dataLen
         for k, v in dataDict.items():
@@ -30,10 +42,40 @@ class MyPlot(pg.GraphicsLayoutWidget):
 
         pass
 
+    def _in_resize_zone(self, ev):
+        return ev.y() >= self.height() - RESIZE_MARGIN
+
     def mousePressEvent(self, ev):
+        if ev.button() == QtCore.Qt.LeftButton and self._in_resize_zone(ev):
+            self._resizing = True
+            self._resize_start_global_y = ev.globalY()
+            self._resize_start_height = self.height()
+            ev.accept()
         return
 
+    def mouseMoveEvent(self, ev):
+        if self._resizing:
+            new_height = self._resize_start_height + ev.globalY() - self._resize_start_global_y
+            new_height = max(MIN_PLOT_HEIGHT, min(MAX_PLOT_HEIGHT, new_height))
+            self.setFixedHeight(new_height)
+            ev.accept()
+            return
+        if self._in_resize_zone(ev):
+            self.setCursor(QtCore.Qt.SizeVerCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._resizing:
+            self._resizing = False
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
     def mouseDoubleClickEvent(self, ev):
+        if self._in_resize_zone(ev):
+            return
         self.NowPlotNo = (self.NowPlotNo + 1) % len(self.dataDict)
         key = list(self.dataDict.keys())[self.NowPlotNo]
         self.plot1.setTitle(key,**{"font-family": "微软雅黑", 'font-size': '20pt'})
