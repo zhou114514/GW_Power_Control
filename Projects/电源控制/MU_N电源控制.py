@@ -22,7 +22,7 @@ PLOT_CURRENT_KEY = "电流"
 DATA_DIR = os.path.join(".", "电源采集数据")
 DEFAULT_VOLTAGE_LIMIT = 100.0
 DEFAULT_CURRENT_LIMIT = 100.0
-CHANNEL_ROW_COUNT = 5
+CHANNEL_ROW_COUNT = 4
 DEFAULT_SAMPLE_RATE_HZ = 60
 MIN_SAMPLE_RATE_HZ = 1
 MAX_SAMPLE_RATE_HZ = 60
@@ -265,15 +265,10 @@ class MUNPower(QtWidgets.QWidget):
         voltage_limit_send = QtWidgets.QPushButton("发送", self.sendALL.parent())
         limit_send = QtWidgets.QPushButton("发送", self.sendALL.parent())
 
-        ch_output_btn = QtWidgets.QPushButton(f"CH{channel} 输出开", self.sendALL.parent())
-        ch_output_btn.setCheckable(True)
-        ch_output_btn.setChecked(False)
-
         v_label = QtWidgets.QLabel(f"CH{channel} 电压(V)", self.sendALL.parent())
         c_label = QtWidgets.QLabel(f"CH{channel} 电流(A)", self.sendALL.parent())
         v_limit_label = QtWidgets.QLabel(f"CH{channel} 硬件保护电压阈值(V)", self.sendALL.parent())
         c_limit_label = QtWidgets.QLabel(f"CH{channel} 硬件保护电流阈值(A)", self.sendALL.parent())
-        ch_out_label = QtWidgets.QLabel(f"CH{channel} 通道输出", self.sendALL.parent())
 
         self.set_group_layout.addWidget(v_label, base_row, 0)
         self.set_group_layout.addWidget(voltage_input, base_row, 1)
@@ -291,9 +286,6 @@ class MUNPower(QtWidgets.QWidget):
         self.set_group_layout.addWidget(limit_input, base_row + 3, 1)
         self.set_group_layout.addWidget(limit_send, base_row + 3, 2)
 
-        self.set_group_layout.addWidget(ch_out_label, base_row + 4, 0)
-        self.set_group_layout.addWidget(ch_output_btn, base_row + 4, 1, 1, 2)
-
         self.channel_inputs[channel] = {
             "voltage": voltage_input,
             "current": current_input,
@@ -303,7 +295,6 @@ class MUNPower(QtWidgets.QWidget):
             "current_send": current_send,
             "voltage_limit_send": voltage_limit_send,
             "limit_send": limit_send,
-            "output_btn": ch_output_btn,
         }
 
         self._register_channel_widget(channel, v_label)
@@ -318,8 +309,6 @@ class MUNPower(QtWidgets.QWidget):
         self._register_channel_widget(channel, c_limit_label)
         self._register_channel_widget(channel, limit_input)
         self._register_channel_widget(channel, limit_send)
-        self._register_channel_widget(channel, ch_out_label)
-        self._register_channel_widget(channel, ch_output_btn)
 
     def _append_check_channel_ui(self, channel):
         base_row = (channel - 1) * CHANNEL_ROW_COUNT
@@ -399,9 +388,6 @@ class MUNPower(QtWidgets.QWidget):
         )
         self.channel_inputs[channel]["limit_send"].clicked.connect(
             lambda checked=False, ch=channel: self.limit_set(ch)
-        )
-        self.channel_inputs[channel]["output_btn"].clicked.connect(
-            lambda checked=False, ch=channel: self.set_channel_output(ch, not self.channel_output_states.get(ch, False))
         )
         self.channel_outputs[channel]["voltage_check"].clicked.connect(
             lambda checked=False, ch=channel: self.V_get(ch)
@@ -493,14 +479,6 @@ class MUNPower(QtWidgets.QWidget):
         can_edit_channels = not output_on and not collecting
         self.add_channel_btn.setEnabled(can_edit_channels and self.channel_count < MAX_MUN_CHANNELS)
         self.delete_channel_btn.setEnabled(can_edit_channels and self.channel_count > 2)
-
-        for channel in self._visible_channels():
-            if channel in self.channel_inputs and "output_btn" in self.channel_inputs[channel]:
-                btn = self.channel_inputs[channel]["output_btn"]
-                btn.setEnabled(connected)
-                ch_state = self.channel_output_states.get(channel, False)
-                btn.setChecked(ch_state)
-                btn.setText(f"CH{channel} 输出{'关' if ch_state else '开'}")
 
     def _sync_output_state(self):
         self.isOutput = any(self.channel_output_states.get(ch, False) for ch in self._visible_channels())
