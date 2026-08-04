@@ -224,10 +224,12 @@ class UpperPcWin(QtWidgets.QMainWindow, Ui_MainWindow):
 
     def reloadUi(self):
         """停止所有电源与 TCP 服务，清理 UI 元素，重新加载当前配置"""
-        # 1. 停止 TCP 服务
+        # 1. 停止 TCP 服务：先关闭 socket 让 accept() 自然退出，再等线程结束
         if hasattr(self, 'tcp_server') and self.tcp_server.isRunning():
-            self.tcp_server.terminate()
-            self.tcp_server.wait(2000)
+            self.tcp_server.close_tcp_server()
+            if not self.tcp_server.wait(3000):
+                self.tcp_server.terminate()
+                self.tcp_server.wait(1000)
 
         # 2. 停止数据采集线程并关闭串口
         for obj in getattr(self, 'power_objs', []):
