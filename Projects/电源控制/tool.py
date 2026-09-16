@@ -34,18 +34,18 @@ DEFAULT_POWER_CONFIG = {
     },
     "devices": [
         {
-            "id": "long1",
-            "name": "长条电源",
+            "id": "GXT",
+            "name": "光学头电源",
             "type": "long",
             "port": "COM",
             "default_voltage": 42,
             "default_current": 3.5,
-            "current_limit": 100,
+            "current_limit": 3.5,
             "remote": True,
         }
     ],
-    "power_on_sequence": [],
-    "power_off_sequence": [],
+    "power_on_sequence": ["GXT"],
+    "power_off_sequence": ["GXT"],
 }
 
 _power_device_registry = {}
@@ -97,7 +97,7 @@ class Tool():
             config = configparser.ConfigParser()
             config.add_section("TCP")
             config.set("TCP", "ip", "127.0.0.1")
-            config.set("TCP", "port", "4070")
+            config.set("TCP", "port", "10002")
             config.set("TCP", "auto_connect", "True")
             config.add_section("Additional")
             config.set("Additional", "power_add", "False")
